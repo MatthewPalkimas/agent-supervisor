@@ -1,0 +1,10 @@
+{
+  "name": "agent-supervisor",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:app": "cd app && npm run dev",
+    "install:all": "cd server && npm install && cd ../app && npm install"
+  }
+}
