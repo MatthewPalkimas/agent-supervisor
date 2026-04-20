@@ -33,6 +33,9 @@ export class WsServer {
         if (msg.type === 'get_history' && msg.sessionId) {
           this.emit('getHistory', { sessionId: msg.sessionId, ws });
         }
+        if (msg.type === 'interrupt' && msg.sessionId) {
+          this.emit('interrupt', { sessionId: msg.sessionId });
+        }
       } catch (e) {
         console.error('[WS] Failed to parse client message:', e);
       }

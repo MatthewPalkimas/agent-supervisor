@@ -96,20 +96,27 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
                 textTransform: 'uppercase', letterSpacing: '0.06em',
                 padding: '0 4px',
               }}>
-                {msg.role === 'user' ? 'You' : 'Agent'}
+                {msg.role === 'user' ? 'You' : msg.role === 'tool' ? '🔧 Tool' : 'Agent'}
               </span>
               <div style={{
                 background: msg.role === 'user'
                   ? 'rgba(59,130,246,0.15)'
+                  : msg.role === 'tool'
+                  ? 'rgba(167,139,250,0.08)'
                   : 'rgba(255,255,255,0.04)',
                 border: `1px solid ${msg.role === 'user'
                   ? 'rgba(59,130,246,0.2)'
+                  : msg.role === 'tool'
+                  ? 'rgba(167,139,250,0.15)'
                   : 'rgba(255,255,255,0.06)'}`,
                 borderRadius: 10,
-                padding: '10px 14px',
-                fontSize: 13, color: '#cbd5e1', lineHeight: 1.65,
+                padding: msg.role === 'tool' ? '6px 12px' : '10px 14px',
+                fontSize: msg.role === 'tool' ? 11 : 13,
+                color: msg.role === 'tool' ? '#a78bfa' : '#cbd5e1',
+                lineHeight: 1.65,
                 whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                 maxWidth: '88%',
+                fontFamily: msg.role === 'tool' ? 'ui-monospace, monospace' : 'inherit',
               }}>
                 {msg.text}
               </div>

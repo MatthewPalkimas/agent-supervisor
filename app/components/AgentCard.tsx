@@ -37,10 +37,11 @@ function formatModel(model: string) {
     .replace(/-(\d)/, ' $1');
 }
 
-export function AgentCard({ session, onSendMessage, onTerminate, onViewHistory }: {
+export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onViewHistory }: {
   session: SessionState;
   onSendMessage: (id: string, msg: string) => void;
   onTerminate: (id: string) => void;
+  onInterrupt: (id: string) => void;
   onViewHistory: (id: string) => void;
 }) {
   const [, setTick] = useState(0);
@@ -273,6 +274,23 @@ export function AgentCard({ session, onSendMessage, onTerminate, onViewHistory }
               }}
             >
               {sent ? '✓ Sent' : 'Send'}
+            </button>
+            <button
+              onClick={() => onInterrupt(session.id)}
+              title="Interrupt current operation"
+              style={{
+                padding: '8px 10px',
+                background: session.status === 'busy' || session.stuck
+                  ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.04)',
+                color: session.status === 'busy' || session.stuck
+                  ? '#fbbf24' : '#475569',
+                border: `1px solid ${session.status === 'busy' || session.stuck
+                  ? 'rgba(251,191,36,0.25)' : 'transparent'}`,
+                borderRadius: 8, cursor: 'pointer', fontSize: 12,
+                fontWeight: 600, transition: 'all 0.2s',
+              }}
+            >
+              ⏹ Stop
             </button>
             <button
               onClick={terminate}

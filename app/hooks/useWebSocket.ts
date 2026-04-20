@@ -44,6 +44,11 @@ export function useWebSocket() {
       wsRef.current.send(JSON.stringify({ type: 'terminate_session', sessionId }));
   }, []);
 
+  const interruptSession = useCallback((sessionId: string) => {
+    wsRef.current?.readyState === WebSocket.OPEN &&
+      wsRef.current.send(JSON.stringify({ type: 'interrupt', sessionId }));
+  }, []);
+
   const startSession = useCallback((prompt: string, model?: string) => {
     wsRef.current?.readyState === WebSocket.OPEN &&
       wsRef.current.send(JSON.stringify({ type: 'start_session', prompt, model }));
@@ -56,5 +61,5 @@ export function useWebSocket() {
 
   const clearHistory = useCallback(() => setHistory(null), []);
 
-  return { sessions, sendMessage, terminateSession, startSession, getHistory, clearHistory, history, connected };
+  return { sessions, sendMessage, terminateSession, interruptSession, startSession, getHistory, clearHistory, history, connected };
 }

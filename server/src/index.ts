@@ -146,6 +146,16 @@ wsServer.on('sendMessage', (payload: unknown) => {
   }
 });
 
+wsServer.on('interrupt', (payload: unknown) => {
+  const { sessionId } = payload as { sessionId: string };
+  const workerAcp = workerClients.get(sessionId);
+  if (workerAcp) {
+    workerAcp.cancelSession(sessionId);
+  } else if (currentAcp) {
+    currentAcp.cancelSession(sessionId);
+  }
+});
+
 wsServer.on('terminateSession', (payload: unknown) => {
   const { sessionId } = payload as { sessionId: string };
   const lockPath = path.join(os.homedir(), '.kiro', 'sessions', 'cli', `${sessionId}.lock`);
@@ -218,7 +228,15 @@ wsServer.on('getHistory', (payload: unknown) => {
             .map((b: { data: unknown }) => String(b.data))
             .join('');
           if (text) messages.push({ role: 'assistant', text });
-        } else if (ev.kind === 'HumanMessage' || ev.kind === 'UserMessage') {
+          // Extract tool calls
+          for (const block of (ev.data?.content ?? [])) {
+            if (block.kind === 'toolUse') {
+              const name = block.data?.name ?? 'unknown';
+              const purpose = block.data?.input?.__tool_use_purpose ?? '';
+              messages.push({ role: 'tool', text: purpose ? `${name}: ${purpose}` : name });
+            }
+          }
+        } else if (ev.kind === 'HumanMessage' || ev.kind === 'UserMessage' || ev.kind === 'Prompt') {
           const text = (ev.data?.content ?? [])
             .filter((b: { kind: string }) => b.kind === 'text')
             .map((b: { data: unknown }) => String(b.data))

@@ -12,7 +12,7 @@ const STATUS_ORDER: Record<SessionState['status'], number> = {
 };
 
 export default function Home() {
-  const { sessions, sendMessage, terminateSession, startSession, getHistory, clearHistory, history, connected } = useWebSocket();
+  const { sessions, sendMessage, terminateSession, interruptSession, startSession, getHistory, clearHistory, history, connected } = useWebSocket();
   const [showNewSession, setShowNewSession] = useState(false);
 
   const active = sessions.filter(s => s.status !== 'terminated');
@@ -102,6 +102,7 @@ export default function Home() {
               session={s}
               onSendMessage={sendMessage}
               onTerminate={terminateSession}
+              onInterrupt={interruptSession}
               onViewHistory={getHistory}
             />
           ))}
