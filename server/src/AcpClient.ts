@@ -109,6 +109,7 @@ export class AcpClient extends EventEmitter {
       const { resolve, reject } = this.pendingRequests.get(msg.id as number)!;
       this.pendingRequests.delete(msg.id as number);
       if (msg.error) {
+        console.error('[ACP] RPC error:', { code: msg.error.code, message: msg.error.message, data: msg.error.data, requestId: msg.id });
         reject(new Error(msg.error.message));
       } else {
         resolve(msg.result);
@@ -140,12 +141,14 @@ export class AcpClient extends EventEmitter {
   private send(method: string, params?: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process?.stdin?.writable) {
+        console.error('[ACP] Cannot send, process not running. Method:', method);
         reject(new Error('ACP process not running'));
         return;
       }
       const id = ++this.requestId;
       const request: JsonRpcRequest = { jsonrpc: '2.0', id, method, params };
       this.pendingRequests.set(id, { resolve, reject });
+      console.log('[ACP] →', method, `(id=${id})`);
       this.process.stdin.write(JSON.stringify(request) + '\n');
     });
   }
@@ -185,12 +188,13 @@ export class AcpClient extends EventEmitter {
   /**
    * Cancel the current in-flight operation for a session, then send a new message.
    * If nothing is in-flight, behaves like a normal sendMessage.
+   * If the session is invalid (e.g. after restart), creates a new session and retries.
    */
   async sendMessage(sessionId: string, message: string): Promise<void> {
     if (this.promptInFlight) {
-      await this.cancel(sessionId);
+      console.log('[ACP] Prompt in-flight, queueing message for session', sessionId.slice(0, 8));
     }
-    return this.executePrompt(sessionId, message);
+    return this.enqueuePrompt(sessionId, message);
   }
 
   /**
@@ -198,6 +202,7 @@ export class AcpClient extends EventEmitter {
    * sends session/cancel to the ACP process.
    */
   async cancel(sessionId: string): Promise<void> {
+    console.log('[ACP] Cancelling in-flight prompt for session', sessionId.slice(0, 8));
     // Reject and clear any queued prompts
     for (const queued of this.promptQueue) {
       queued.reject(new Error('Cancelled by new message'));
@@ -226,11 +231,23 @@ export class AcpClient extends EventEmitter {
 
   private async executePrompt(sessionId: string, message: string): Promise<void> {
     this.promptInFlight = true;
+    console.log('[ACP] Sending prompt to session', sessionId.slice(0, 8), '| message:', message.startsWith('Parse the following session logs') ? '<supervisor poll>' : message.slice(0, 100));
     try {
       await this.send('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: message }],
       });
+      console.log('[ACP] Prompt completed for session', sessionId.slice(0, 8));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('Prompt already in progress')) {
+        // Race condition — re-queue and let it retry after current prompt finishes
+        console.log('[ACP] Prompt collision, requeueing for session', sessionId.slice(0, 8));
+        return new Promise<void>((resolve, reject) => {
+          this.promptQueue.push({ sessionId, message, resolve, reject });
+        });
+      }
+      throw e;
     } finally {
       this.promptInFlight = false;
       this.drainPromptQueue();
