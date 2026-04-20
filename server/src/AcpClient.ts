@@ -183,10 +183,32 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
-   * Send a message to a specific session. Queues if a prompt is in-flight.
+   * Cancel the current in-flight operation for a session, then send a new message.
+   * If nothing is in-flight, behaves like a normal sendMessage.
    */
   async sendMessage(sessionId: string, message: string): Promise<void> {
-    return this.enqueuePrompt(sessionId, message);
+    if (this.promptInFlight) {
+      await this.cancel(sessionId);
+    }
+    return this.executePrompt(sessionId, message);
+  }
+
+  /**
+   * Cancel the current in-flight operation. Clears the prompt queue and
+   * sends session/cancel to the ACP process.
+   */
+  async cancel(sessionId: string): Promise<void> {
+    // Reject and clear any queued prompts
+    for (const queued of this.promptQueue) {
+      queued.reject(new Error('Cancelled by new message'));
+    }
+    this.promptQueue = [];
+    try {
+      await this.send('session/cancel', { sessionId });
+    } catch {
+      // Ignore cancel errors — the process may have already finished
+    }
+    this.promptInFlight = false;
   }
 
   /**
