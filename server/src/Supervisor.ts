@@ -106,8 +106,8 @@ export class SupervisorPoller extends EventEmitter {
 
     // Cap total prompt to avoid internal errors from kiro-cli acp
     const MAX_PROMPT = 4000;
-    const header = `You are a supervisor analyzing session data that has already been collected for you. DO NOT attempt to call any tools or functions — you have none. Simply analyze the data below and respond with JSON.\n\nThere are ${alive.length} active sessions:\n\n`;
-    const footer = '\n\nFor each session, respond with ONLY a JSON array (no markdown, no explanation):\n[{"id":"<first 8 chars>","status":"busy"|"idle","summary":"<1 sentence>","stuck":true|false,"needsNudge":true|false}]\n\nRules:\n- status: "busy" if running tools, "idle" if waiting\n- summary: 1 sentence describing what the session is doing or just finished\n- stuck: true if same tool called 3+ times, error loops, or idle with clearly unfinished work\n- needsNudge: true if idle with unfinished work that should continue';
+    const header = `Parse the following session logs and return a JSON array. No tools are available. Respond with ONLY the JSON array, nothing else.\n\nSessions:\n\n`;
+    const footer = `\n\nOutput format — respond with ONLY this JSON array, no other text:\n[{"id":"<8-char id from above>","status":"busy"|"idle","summary":"<1 sentence>","stuck":true|false,"needsNudge":true|false}]\n\nField rules: status="busy" if tools are running, else "idle". summary=what the session is doing. stuck=true if error loops or repeated tool calls. needsNudge=true if idle with unfinished work.`;
     const maxBlocks = MAX_PROMPT - header.length - footer.length;
     const prompt = header + blocks.slice(0, maxBlocks) + footer;
     console.log(`[SupervisorPoller] Prompt size: ${prompt.length} chars for ${alive.length} sessions`);
