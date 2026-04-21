@@ -42,7 +42,7 @@ export class SessionPoller extends EventEmitter {
 
   // Track previous status per session to detect transitions
   private prevStatus = new Map<string, string>();
-  private excludeSessionId: string | null = null;
+  private excludeSessionIds = new Set<string>();
 
   constructor() {
     super();
@@ -51,7 +51,7 @@ export class SessionPoller extends EventEmitter {
 
   /** Exclude a session ID from results (e.g. the supervisor's own session) */
   setExcludeSessionId(id: string): void {
-    this.excludeSessionId = id;
+    this.excludeSessionIds.add(id);
   }
 
   start(fallbackIntervalMs = 10000): void {
@@ -114,7 +114,7 @@ export class SessionPoller extends EventEmitter {
           const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
           const id: string = raw.session_id;
           if (!id) continue;
-          if (this.excludeSessionId && id === this.excludeSessionId) continue;
+          if (this.excludeSessionIds.has(id)) continue;
 
           // Check if process is alive
           const lockPath = path.join(this.sessionsDir, `${id}.lock`);
@@ -152,6 +152,8 @@ export class SessionPoller extends EventEmitter {
           if (prev !== status) {
             hasChanges = true;
             this.prevStatus.set(id, status);
+            // Emit per-session transition so listeners can react to individual changes
+            this.emit('sessionTransition', { sessionId: id, status, previousStatus: prev ?? 'unknown' });
           }
 
           updated.set(id, {
@@ -239,7 +241,7 @@ export class SessionPoller extends EventEmitter {
   getSessions(): SessionState[] {
     const now = Date.now();
     return Array.from(this.sessions.values())
-      .filter(s => !this.excludeSessionId || s.id !== this.excludeSessionId)
+      .filter(s => !this.excludeSessionIds.has(s.id))
       .map(s => ({ ...s, elapsedMs: now - s.startTime }));
   }
 }

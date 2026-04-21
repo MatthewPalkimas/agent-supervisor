@@ -7,6 +7,7 @@ import { SessionPoller, SessionState } from './SessionPoller';
 import { SupervisorPoller } from './Supervisor';
 import { WsServer } from './WsServer';
 import { spawnWorkerSession } from './WorkerSession';
+import { Orchestrator, ReviewResult } from './Orchestrator';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL ?? '30000', 10);
@@ -19,6 +20,54 @@ let usingSupervisor = false;
 
 // Worker ACP clients keyed by real session ID — used for message routing
 const workerClients = new Map<string, AcpClient>();
+
+// Orchestrator agent for reviewing worker output
+let orchestrator: Orchestrator | null = null;
+// Tracks sessions currently being reviewed to avoid duplicate triggers
+const reviewsInFlight = new Set<string>();
+
+(async () => {
+  try {
+    orchestrator = new Orchestrator();
+    orchestrator.setOnSessionChange((newId) => {
+      filePoller.setExcludeSessionId(newId);
+      supervisorPoller?.addExcludeSessionId(newId);
+    });
+    await orchestrator.start();
+  } catch (e) {
+    console.error('[Server] Orchestrator failed to start:', e);
+  }
+})();
+
+/** Build a sendToWorker function for a given session ID. */
+function makeSendToWorker(sessionId: string) {
+  return async (message: string) => {
+    const workerAcp = workerClients.get(sessionId);
+    if (workerAcp) {
+      await workerAcp.sendMessage(sessionId, message);
+    } else if (currentAcp) {
+      await currentAcp.sendMessage(sessionId, message);
+    }
+  };
+}
+
+/** Trigger an auto-review for a session. Non-blocking — runs in background. */
+function triggerAutoReview(sessionId: string): void {
+  if (!orchestrator?.isReady() || reviewsInFlight.has(sessionId)) return;
+  reviewsInFlight.add(sessionId);
+  console.log(`[AutoReview] Triggering review for ${sessionId.slice(0, 8)}`);
+  orchestrator.review(sessionId, makeSendToWorker(sessionId))
+    .then(result => {
+      console.log(`[AutoReview] ${sessionId.slice(0, 8)}: ${result.reviewState} (${result.reviewCount} reviews)`);
+      wsServer.broadcast(mergePending(getPollerSessions()), { type: 'review_result', sessionId, ...result });
+      // Also broadcast updated activity log
+      wsServer.broadcast(mergePending(getPollerSessions()), {
+        type: 'orchestrator_status', ready: true, activity: orchestrator!.activityLog,
+      });
+    })
+    .catch(e => console.error(`[AutoReview] ${sessionId.slice(0, 8)} error:`, e))
+    .finally(() => reviewsInFlight.delete(sessionId));
+}
 
 // Pending sessions waiting for their real session ID from spawnWorkerSession.
 // Once the real ID arrives, we keep the entry until the poller picks it up with real data.
@@ -156,6 +205,37 @@ wsServer.on('interrupt', (payload: unknown) => {
   }
 });
 
+wsServer.on('review', async (payload: unknown) => {
+  const { sessionId, ws } = payload as { sessionId: string; ws: WebSocket };
+  if (!orchestrator?.isReady()) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'review_result', sessionId, error: 'Orchestrator not ready' }));
+    }
+    return;
+  }
+  try {
+    const result = await orchestrator.review(sessionId, makeSendToWorker(sessionId));
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'review_result', sessionId, ...result }));
+    }
+  } catch (e) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'review_result', sessionId, error: String(e) }));
+    }
+  }
+});
+
+wsServer.on('getOrchestrator', (payload: unknown) => {
+  const { ws } = payload as { ws: WebSocket };
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'orchestrator_status',
+      ready: orchestrator?.isReady() ?? false,
+      activity: orchestrator?.activityLog ?? [],
+    }));
+  }
+});
+
 wsServer.on('terminateSession', (payload: unknown) => {
   const { sessionId } = payload as { sessionId: string };
   const lockPath = path.join(os.homedir(), '.kiro', 'sessions', 'cli', `${sessionId}.lock`);
@@ -265,6 +345,18 @@ filePoller.on('stateChange', () => {
     supervisorPoller?.triggerPoll(); // then get AI assessment
   }
 });
+
+// Per-session transitions feed the ReviewTracker for auto-review
+filePoller.on('sessionTransition', (payload: unknown) => {
+  const { sessionId, status } = payload as { sessionId: string; status: string };
+  if (orchestrator?.isReady()) {
+    const mappedStatus = status === 'busy' ? 'busy' : 'idle';
+    const shouldReview = orchestrator.tracker.onStatusUpdate(sessionId, mappedStatus);
+    if (shouldReview) {
+      triggerAutoReview(sessionId);
+    }
+  }
+});
 filePoller.start(10000);
 
 async function startSupervisor(): Promise<void> {
@@ -299,7 +391,10 @@ async function startSupervisor(): Promise<void> {
   await new Promise(r => setTimeout(r, 2000));
 
   supervisorPoller = new SupervisorPoller(acp, acp.getSessionId() ?? undefined);
-  supervisorPoller.setWorkerClientResolver((sessionId) => workerClients.get(sessionId));
+
+  // Exclude orchestrator session from supervisor if it's already running
+  const oid = orchestrator?.getSessionId();
+  if (oid) supervisorPoller.addExcludeSessionId(oid);
 
   supervisorPoller.on('update', () => {
     if (!usingSupervisor) {

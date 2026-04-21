@@ -36,6 +36,12 @@ export class WsServer {
         if (msg.type === 'interrupt' && msg.sessionId) {
           this.emit('interrupt', { sessionId: msg.sessionId });
         }
+        if (msg.type === 'review' && msg.sessionId) {
+          this.emit('review', { sessionId: msg.sessionId, ws });
+        }
+        if (msg.type === 'get_orchestrator') {
+          this.emit('getOrchestrator', { ws });
+        }
       } catch (e) {
         console.error('[WS] Failed to parse client message:', e);
       }
@@ -50,11 +56,12 @@ export class WsServer {
     }
   }
 
-  broadcast(sessions: SessionState[]): void {
+  broadcast(sessions: SessionState[], extra?: Record<string, unknown>): void {
     const msg = JSON.stringify({ type: 'update', sessions });
     for (const ws of this.clients) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(msg);
+        if (extra) ws.send(JSON.stringify(extra));
       }
     }
   }

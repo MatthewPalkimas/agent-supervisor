@@ -8,19 +8,16 @@ import { NewSessionModal } from '../components/NewSessionModal';
 import { SessionState } from '../types/session';
 
 const STATUS_ORDER: Record<SessionState['status'], number> = {
-  starting: 0, busy: 1, active: 2, idle: 3, terminated: 4,
+  starting: 0, busy: 1, active: 1, idle: 1, terminated: 4,
 };
 
 export default function Home() {
-  const { sessions, sendMessage, terminateSession, interruptSession, startSession, getHistory, clearHistory, history, connected } = useWebSocket();
+  const { sessions, sendMessage, terminateSession, interruptSession, reviewSession, startSession, getHistory, clearHistory, history, connected } = useWebSocket();
   const [showNewSession, setShowNewSession] = useState(false);
 
   const active = sessions.filter(s => s.status !== 'terminated');
   const terminated = sessions.filter(s => s.status === 'terminated');
-  const sorted = [...active].sort((a, b) => {
-    if (a.stuck !== b.stuck) return a.stuck ? -1 : 1;
-    return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-  });
+  const sorted = [...active].sort((a, b) => a.startTime - b.startTime);
 
   const busyCount = active.filter(s => s.status === 'busy' && !s.stuck).length;
   const startingCount = active.filter(s => s.status === 'starting').length;
@@ -49,6 +46,12 @@ export default function Home() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <Link href="/orchestrator" style={{
+            fontSize: 12, color: '#a78bfa', textDecoration: 'none',
+            transition: 'color 0.15s', fontWeight: 600,
+          }}>
+            Orchestrator
+          </Link>
           {terminated.length > 0 && (
             <Link href="/history" style={{
               fontSize: 12, color: '#475569', textDecoration: 'none',
@@ -103,6 +106,7 @@ export default function Home() {
               onSendMessage={sendMessage}
               onTerminate={terminateSession}
               onInterrupt={interruptSession}
+              onReview={reviewSession}
               onViewHistory={getHistory}
             />
           ))}

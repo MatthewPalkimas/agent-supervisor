@@ -15,4 +15,8 @@ export interface SessionState {
   /** Timestamp (ms) of the last activity (last .jsonl write) */
   lastActivityMs: number;
   hasPendingTasks: boolean;
+  /** Review state from orchestrator */
+  reviewState?: string;
+  reviewCount?: number;
+  reviewIssues?: string[];
 }

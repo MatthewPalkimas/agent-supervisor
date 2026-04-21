@@ -37,11 +37,12 @@ function formatModel(model: string) {
     .replace(/-(\d)/, ' $1');
 }
 
-export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onViewHistory }: {
+export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onReview, onViewHistory }: {
   session: SessionState;
   onSendMessage: (id: string, msg: string) => void;
   onTerminate: (id: string) => void;
   onInterrupt: (id: string) => void;
+  onReview: (id: string) => void;
   onViewHistory: (id: string) => void;
 }) {
   const [, setTick] = useState(0);
@@ -157,8 +158,8 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
         </div>
 
         {/* Badges */}
-        {(session.nudged || session.stuck) && (
-          <div style={{ display: 'flex', gap: 6 }}>
+        {(session.nudged || session.stuck || session.reviewState) && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {session.stuck && (
               <span style={{
                 fontSize: 10, fontWeight: 600, color: '#fbbf24',
@@ -179,6 +180,46 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
                 ↩ nudged
               </span>
             )}
+            {session.reviewState === 'reviewing' && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, color: '#a78bfa',
+                background: 'rgba(167,139,250,0.08)',
+                border: '1px solid rgba(167,139,250,0.2)',
+                borderRadius: 4, padding: '2px 8px',
+              }}>
+                🔍 reviewing
+              </span>
+            )}
+            {session.reviewState === 'passed' && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, color: '#4ade80',
+                background: 'rgba(74,222,128,0.08)',
+                border: '1px solid rgba(74,222,128,0.2)',
+                borderRadius: 4, padding: '2px 8px',
+              }}>
+                ✓ review passed
+              </span>
+            )}
+            {(session.reviewState === 'correction_sent' || session.reviewState === 'awaiting_fix') && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, color: '#fb923c',
+                background: 'rgba(251,146,60,0.08)',
+                border: '1px solid rgba(251,146,60,0.2)',
+                borderRadius: 4, padding: '2px 8px',
+              }}>
+                ↻ fix requested ({session.reviewCount}/{3})
+              </span>
+            )}
+            {session.reviewState === 'failed_max_retries' && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, color: '#f87171',
+                background: 'rgba(248,113,113,0.08)',
+                border: '1px solid rgba(248,113,113,0.2)',
+                borderRadius: 4, padding: '2px 8px',
+              }}>
+                ✕ review failed ({session.reviewCount} attempts)
+              </span>
+            )}
           </div>
         )}
 
@@ -194,6 +235,21 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
             marginLeft: 0,
           }}>
             {session.summary}
+          </div>
+        )}
+
+        {/* Review issues */}
+        {session.reviewIssues && session.reviewIssues.length > 0 && session.reviewState !== 'passed' && (
+          <div style={{
+            fontSize: 11, color: '#fb923c', lineHeight: 1.5,
+            borderLeft: '2px solid rgba(251,146,60,0.4)',
+            background: 'rgba(251,146,60,0.04)',
+            borderRadius: '0 6px 6px 0',
+            padding: '6px 12px',
+          }}>
+            {session.reviewIssues.map((issue, i) => (
+              <div key={i}>• {issue}</div>
+            ))}
           </div>
         )}
 
@@ -227,6 +283,18 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
           >
             history
           </button>
+          {isAlive && (
+            <button
+              onClick={() => onReview(session.id)}
+              style={{
+                background: 'none', border: 'none', padding: 0,
+                cursor: 'pointer', color: '#60a5fa', fontSize: 11,
+                fontWeight: 600, transition: 'color 0.15s',
+              }}
+            >
+              review
+            </button>
+          )}
         </div>
 
         {expanded && session.lastMessage && (

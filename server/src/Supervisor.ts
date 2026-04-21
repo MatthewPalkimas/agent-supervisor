@@ -12,31 +12,31 @@ interface RawSession {
   model: string;
 }
 
-type Assessment = { id: string; status: string; summary: string; stuck: boolean; needsNudge: boolean };
+type Assessment = { id: string; status: string; summary: string; stuck: boolean };
 
 export class SupervisorPoller extends EventEmitter {
   private pollInterval: NodeJS.Timeout | null = null;
   private responseBuffer = '';
   private sessions: SessionState[] = [];
   private sessionStartTimes = new Map<string, number>();
-  private nudgedThisCycle = new Set<string>();
   private consecutiveIdlePolls = 0;
   private watching = false;
   private watcher: fs.FSWatcher | null = null;
   private intervalMs = 30000;
   private sessionsDir = path.join(os.homedir(), '.kiro', 'sessions', 'cli');
-  private workerClientResolver?: (sessionId: string) => AcpClient | undefined;
+
+  private excludeSessionIds: Set<string>;
 
   constructor(private acp: AcpClient, private supervisorSessionId?: string) {
     super();
+    this.excludeSessionIds = new Set(supervisorSessionId ? [supervisorSessionId] : []);
     this.acp.on('agent_message_chunk', (u: { content?: { text?: string } }) => {
       if (u.content?.text) this.responseBuffer += u.content.text;
     });
   }
 
-  /** Register a function that resolves session IDs to their worker ACP clients */
-  setWorkerClientResolver(resolver: (sessionId: string) => AcpClient | undefined): void {
-    this.workerClientResolver = resolver;
+  addExcludeSessionId(id: string): void {
+    this.excludeSessionIds.add(id);
   }
 
   start(intervalMs = 30000): void {
@@ -70,8 +70,12 @@ export class SupervisorPoller extends EventEmitter {
     try {
       this.watcher = fs.watch(this.sessionsDir, { persistent: false }, (_, filename) => {
         if (!this.watching) return;
-        // Ignore changes to the supervisor's own session files
-        if (filename && this.supervisorSessionId && filename.startsWith(this.supervisorSessionId)) return;
+        // Ignore changes to excluded session files
+        if (filename) {
+          for (const eid of this.excludeSessionIds) {
+            if (filename.startsWith(eid)) return;
+          }
+        }
         console.log('[SupervisorPoller] Activity detected — resuming polling');
         this.exitWatchMode();
         this.poll();
@@ -97,7 +101,6 @@ export class SupervisorPoller extends EventEmitter {
     const alive = all.filter(s => s.alive);
     const terminated = all.filter(s => !s.alive);
     this.responseBuffer = '';
-    this.nudgedThisCycle.clear();
     if (!alive.length) { this.buildAndEmit([], terminated); return; }
 
     const blocks = alive.map(s =>
@@ -107,7 +110,7 @@ export class SupervisorPoller extends EventEmitter {
     // Cap total prompt to avoid internal errors from kiro-cli acp
     const MAX_PROMPT = 4000;
     const header = `Parse the following session logs and return a JSON array. No tools are available. Respond with ONLY the JSON array, nothing else.\n\nSessions:\n\n`;
-    const footer = `\n\nOutput format — respond with ONLY this JSON array, no other text:\n[{"id":"<8-char id from above>","status":"busy"|"idle","summary":"<1 sentence>","stuck":true|false,"needsNudge":true|false}]\n\nField rules: status="busy" if tools are running, else "idle". summary=what the session is doing. stuck=true if error loops or repeated tool calls. needsNudge=true if idle with unfinished work.`;
+    const footer = `\n\nOutput format — respond with ONLY this JSON array, no other text:\n[{"id":"<8-char id from above>","status":"busy"|"idle","summary":"<1 sentence>","stuck":true|false}]\n\nField rules: status="busy" if tools are running, else "idle". summary=what the session is doing. stuck=true if error loops or repeated tool calls.`;
     const maxBlocks = MAX_PROMPT - header.length - footer.length;
     const prompt = header + blocks.slice(0, maxBlocks) + footer;
     console.log(`[SupervisorPoller] Prompt size: ${prompt.length} chars for ${alive.length} sessions`);
@@ -149,21 +152,6 @@ export class SupervisorPoller extends EventEmitter {
     try {
       const assessments: Assessment[] = JSON.parse(jsonArray);
 
-      // Nudge sessions that need it — route through worker ACP client, not supervisor
-      for (const a of assessments.filter(a => a.needsNudge && !this.nudgedThisCycle.has(a.id))) {
-        const s = alive.find(s => s.id.startsWith(a.id) || a.id.startsWith(s.id.slice(0, 8)));
-        if (!s) continue;
-        this.nudgedThisCycle.add(a.id);
-        console.log(`[SupervisorPoller] Nudging ${s.id.slice(0, 8)}: ${s.name}`);
-        const workerAcp = this.workerClientResolver?.(s.id);
-        if (workerAcp) {
-          workerAcp.sendMessage(s.id, 'You appear to have unfinished work. Please continue with your current task.')
-            .catch(e => console.error('[SupervisorPoller] Nudge failed:', e));
-        } else {
-          console.warn(`[SupervisorPoller] No worker ACP client for ${s.id.slice(0, 8)}, skipping nudge`);
-        }
-      }
-
       const now = Date.now();
       const aliveSessions: SessionState[] = alive.map(s => {
         if (!this.sessionStartTimes.has(s.id)) this.sessionStartTimes.set(s.id, now);
@@ -174,9 +162,9 @@ export class SupervisorPoller extends EventEmitter {
           status: (a?.status as SessionState['status']) ?? (s.lastEventKind === 'ToolResults' ? 'busy' : 'idle'),
           currentTask: s.agent, lastMessage: s.lastMessage,
           summary: a?.summary ?? '', stuck: a?.stuck ?? false,
-          nudged: this.nudgedThisCycle.has(s.id.slice(0, 8)),
+          nudged: false,
           model: s.model,
-          startTime, elapsedMs: now - startTime, lastActivityMs: now, hasPendingTasks: a?.needsNudge ?? false,
+          startTime, elapsedMs: now - startTime, lastActivityMs: now, hasPendingTasks: false,
         };
       });
 
@@ -185,8 +173,7 @@ export class SupervisorPoller extends EventEmitter {
 
       const busy = aliveSessions.filter(s => s.status === 'busy').length;
       const stuck = aliveSessions.filter(s => s.stuck).length;
-      const nudged = this.nudgedThisCycle.size;
-      console.log(`[SupervisorPoller] ${aliveSessions.length} alive (${busy} busy${stuck ? `, ${stuck} stuck` : ''}${nudged ? `, ${nudged} nudged` : ''}), ${terminatedSessions.length} terminated`);
+      console.log(`[SupervisorPoller] ${aliveSessions.length} alive (${busy} busy${stuck ? `, ${stuck} stuck` : ''}), ${terminatedSessions.length} terminated`);
       this.emit('update', this.getSessions());
 
       // Adaptive polling: enter watch mode after 2 consecutive polls with no active work
@@ -287,8 +274,8 @@ export class SupervisorPoller extends EventEmitter {
           const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
           const id: string = raw.session_id;
           if (!id) continue;
-          // Skip the supervisor's own session
-          if (this.supervisorSessionId && id === this.supervisorSessionId) continue;
+          // Skip excluded sessions (supervisor, orchestrator)
+          if (this.excludeSessionIds.has(id)) continue;
 
           let alive = false;
           const lockPath = path.join(sessionsDir, `${id}.lock`);

@@ -45,6 +45,7 @@ export default function History() {
               onSendMessage={sendMessage}
               onTerminate={() => {}}
               onInterrupt={() => {}}
+              onReview={() => {}}
               onViewHistory={getHistory}
             />
           ))}
