@@ -25,18 +25,32 @@ export class SupervisorPoller extends EventEmitter {
   private intervalMs = 30000;
   private sessionsDir = path.join(os.homedir(), '.kiro', 'sessions', 'cli');
 
-  private excludeSessionIds: Set<string>;
+  private excludePids: Set<number>;
 
-  constructor(private acp: AcpClient, private supervisorSessionId?: string) {
+  constructor(private acp: AcpClient, supervisorPid?: number) {
     super();
-    this.excludeSessionIds = new Set(supervisorSessionId ? [supervisorSessionId] : []);
+    this.excludePids = new Set(supervisorPid ? [supervisorPid] : []);
     this.acp.on('agent_message_chunk', (u: { content?: { text?: string } }) => {
       if (u.content?.text) this.responseBuffer += u.content.text;
     });
   }
 
-  addExcludeSessionId(id: string): void {
-    this.excludeSessionIds.add(id);
+  addExcludePid(pid: number): void {
+    this.excludePids.add(pid);
+  }
+
+  /** Check if `pid` is an excluded PID or a descendant of one. */
+  private isExcludedProcess(pid: number): boolean {
+    let cur: number | null = pid;
+    for (let depth = 0; depth < 5 && cur != null && cur > 1; depth++) {
+      if (this.excludePids.has(cur)) return true;
+      try {
+        const txt: string = fs.readFileSync(`/proc/${cur}/status`, 'utf8');
+        const match: RegExpMatchArray | null = txt.match(/^PPid:\s*(\d+)/m);
+        cur = match ? parseInt(match[1], 10) : null;
+      } catch { return false; }
+    }
+    return false;
   }
 
   start(intervalMs = 30000): void {
@@ -70,12 +84,7 @@ export class SupervisorPoller extends EventEmitter {
     try {
       this.watcher = fs.watch(this.sessionsDir, { persistent: false }, (_, filename) => {
         if (!this.watching) return;
-        // Ignore changes to excluded session files
-        if (filename) {
-          for (const eid of this.excludeSessionIds) {
-            if (filename.startsWith(eid)) return;
-          }
-        }
+        if (!filename) return;
         console.log('[SupervisorPoller] Activity detected — resuming polling');
         this.exitWatchMode();
         this.poll();
@@ -274,17 +283,22 @@ export class SupervisorPoller extends EventEmitter {
           const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
           const id: string = raw.session_id;
           if (!id) continue;
-          // Skip excluded sessions (supervisor, orchestrator)
-          if (this.excludeSessionIds.has(id)) continue;
 
           let alive = false;
+          let lockPid: number | null = null;
           const lockPath = path.join(sessionsDir, `${id}.lock`);
           if (fs.existsSync(lockPath)) {
             try {
               const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-              if (lock.pid) { try { process.kill(lock.pid, 0); alive = true; } catch { /* dead */ } }
+              if (lock.pid) {
+                lockPid = lock.pid;
+                try { process.kill(lock.pid, 0); alive = true; } catch { /* dead */ }
+              }
             } catch { /* ignore */ }
           }
+
+          // Skip sessions owned by excluded processes (supervisor, orchestrator)
+          if (lockPid != null && this.isExcludedProcess(lockPid)) continue;
 
           // Only skip old sessions if they're not alive
           if (!alive && fileMtime < cutoff) continue;

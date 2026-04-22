@@ -1,5 +1,46 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { HistoryMessage } from '../hooks/useWebSocket';
+import { useToast } from './Toast';
+
+const ROLE_META: Record<string, { label: string; color: string; glow: string; icon: string }> = {
+  user:      { label: 'You',     color: 'var(--busy)', glow: 'var(--busy-glow)', icon: '🧑' },
+  assistant: { label: 'Agent',   color: 'var(--info)', glow: 'var(--info-glow)', icon: '✦' },
+  tool:      { label: 'Tool',    color: 'var(--ok)',   glow: 'var(--ok-glow)',   icon: '🔧' },
+  system:    { label: 'System',  color: 'var(--idle)', glow: 'var(--idle-glow)', icon: '⚙' },
+};
+
+function meta(role: string) { return ROLE_META[role] ?? ROLE_META.assistant; }
+
+function renderMessage(text: string) {
+  // Simple code block split on ```
+  const parts = text.split(/```([\s\S]*?)```/);
+  return parts.map((p, i) => {
+    if (i % 2 === 1) {
+      // code block
+      const m = p.match(/^(\w+)?\n?([\s\S]*)$/);
+      const lang = m?.[1] ?? '';
+      const body = m?.[2] ?? p;
+      return (
+        <pre key={i} style={{
+          background: 'var(--deep-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          padding: '10px 12px',
+          margin: '8px 0',
+          overflowX: 'auto',
+          fontSize: 11.5,
+          lineHeight: 1.55,
+          color: 'var(--text-1)',
+          fontFamily: 'var(--font-mono)',
+        }}>
+          {lang && <div style={{ fontSize: 10, color: 'var(--text-4)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{lang}</div>}
+          {body.replace(/\n$/, '')}
+        </pre>
+      );
+    }
+    return <span key={i} style={{ whiteSpace: 'pre-wrap' }}>{p}</span>;
+  });
+}
 
 export function HistoryDrawer({ sessionName, messages, onClose }: {
   sessionName: string;
@@ -7,6 +48,8 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
   onClose: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState('');
+  const { toast } = useToast();
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -14,11 +57,25 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Scroll to bottom on open
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return messages;
+    return messages.filter(m => m.text.toLowerCase().includes(q));
+  }, [query, messages]);
+
+  const copy = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); toast({ kind: 'success', title: 'Copied' }); }
+    catch { toast({ kind: 'error', title: 'Copy failed' }); }
+  };
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    messages.forEach(m => { c[m.role] = (c[m.role] ?? 0) + 1; });
+    return c;
   }, [messages]);
 
   return (
@@ -27,101 +84,145 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
         onClick={onClose}
         style={{
           position: 'fixed', inset: 0,
-          background: 'rgba(0,0,0,0.5)',
+          background: 'rgba(0,0,0,0.55)',
           backdropFilter: 'blur(4px)',
+          WebkitBackdropFilter: 'blur(4px)',
           zIndex: 40,
         }}
       />
-
-      <div style={{
-        position: 'fixed', top: 0, right: 0, bottom: 0,
-        width: 'min(640px, 92vw)',
-        background: '#0c0f18',
-        borderLeft: '1px solid rgba(255,255,255,0.06)',
-        zIndex: 50,
-        display: 'flex', flexDirection: 'column',
-        animation: 'fadeIn 0.2s ease-out',
-      }}>
-        {/* Header */}
+      <div
+        className="slide-in-right"
+        style={{
+          position: 'fixed', top: 0, right: 0, bottom: 0,
+          width: 'min(720px, 94vw)',
+          background: 'linear-gradient(180deg, rgba(var(--panel-2-rgb), 0.98), rgba(7,9,15,0.98))',
+          borderLeft: '1px solid var(--border-strong)',
+          boxShadow: '-20px 0 60px rgba(0,0,0,0.5)',
+          zIndex: 50,
+          display: 'flex', flexDirection: 'column',
+        }}
+      >
         <div style={{
-          padding: '18px 24px',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '18px 22px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex', flexDirection: 'column', gap: 12,
         }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0' }}>
-              Chat History
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 10.5, color: 'var(--text-4)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+                Conversation
+              </div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-0)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {sessionName}
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: '#475569', marginTop: 3 }}>
-              {sessionName}
+            <button className="icon-btn" onClick={onClose}>✕</button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{
+              flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+              padding: '7px 10px', background: 'var(--deep)',
+              border: '1px solid var(--border)', borderRadius: 8,
+            }}>
+              <span style={{ fontSize: 13, color: 'var(--text-4)' }}>⌕</span>
+              <input
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search messages…"
+                style={{ flex: 1, fontSize: 12.5 }}
+              />
+              {query && (
+                <button className="icon-btn" onClick={() => setQuery('')} style={{ width: 20, height: 20, fontSize: 11 }}>✕</button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-4)' }}>
+              {filtered.length}/{messages.length}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'rgba(255,255,255,0.04)', border: 'none',
-              color: '#64748b', cursor: 'pointer', fontSize: 14,
-              padding: '6px 10px', borderRadius: 6,
-              transition: 'background 0.15s',
-            }}
-          >
-            ✕
-          </button>
+
+          {Object.keys(counts).length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {Object.entries(counts).map(([role, count]) => {
+                const m = meta(role);
+                return (
+                  <span
+                    key={role}
+                    className="chip"
+                    style={{ color: m.color, background: `rgba(${m.glow}, 0.08)`, borderColor: `rgba(${m.glow}, 0.22)`, fontSize: 10.5 }}
+                  >
+                    {m.icon} {m.label} <span style={{ color: 'var(--text-4)', marginLeft: 2 }}>{count}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* Messages */}
         <div
           ref={scrollRef}
           style={{
-            flex: 1, overflowY: 'auto', padding: '20px 24px',
-            display: 'flex', flexDirection: 'column', gap: 16,
+            flex: 1, overflowY: 'auto', padding: '20px 22px',
+            display: 'flex', flexDirection: 'column', gap: 14,
           }}
         >
-          {messages.length === 0 && (
-            <div style={{
-              color: '#334155', fontSize: 13, textAlign: 'center',
-              marginTop: 60,
-            }}>
-              No messages found
+          {filtered.length === 0 && (
+            <div style={{ color: 'var(--text-5)', fontSize: 13, textAlign: 'center', marginTop: 80 }}>
+              {messages.length === 0 ? 'No messages yet' : 'No messages match your search'}
             </div>
           )}
-          {messages.map((msg, i) => (
-            <div key={i} style={{
-              display: 'flex', flexDirection: 'column',
-              alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              gap: 4,
-            }}>
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#475569',
-                textTransform: 'uppercase', letterSpacing: '0.06em',
-                padding: '0 4px',
+          {filtered.map((msg, i) => {
+            const m = meta(msg.role);
+            const isUser = msg.role === 'user';
+            const isTool = msg.role === 'tool';
+            return (
+              <div key={i} style={{
+                display: 'flex', flexDirection: 'column',
+                alignItems: isUser ? 'flex-end' : 'flex-start',
+                gap: 4,
               }}>
-                {msg.role === 'user' ? 'You' : msg.role === 'tool' ? '🔧 Tool' : 'Agent'}
-              </span>
-              <div style={{
-                background: msg.role === 'user'
-                  ? 'rgba(59,130,246,0.15)'
-                  : msg.role === 'tool'
-                  ? 'rgba(167,139,250,0.08)'
-                  : 'rgba(255,255,255,0.04)',
-                border: `1px solid ${msg.role === 'user'
-                  ? 'rgba(59,130,246,0.2)'
-                  : msg.role === 'tool'
-                  ? 'rgba(167,139,250,0.15)'
-                  : 'rgba(255,255,255,0.06)'}`,
-                borderRadius: 10,
-                padding: msg.role === 'tool' ? '6px 12px' : '10px 14px',
-                fontSize: msg.role === 'tool' ? 11 : 13,
-                color: msg.role === 'tool' ? '#a78bfa' : '#cbd5e1',
-                lineHeight: 1.65,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                maxWidth: '88%',
-                fontFamily: msg.role === 'tool' ? 'ui-monospace, monospace' : 'inherit',
-              }}>
-                {msg.text}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px',
+                  flexDirection: isUser ? 'row-reverse' : 'row',
+                }}>
+                  <span className="chip" style={{
+                    color: m.color,
+                    background: `rgba(${m.glow}, 0.1)`,
+                    borderColor: `rgba(${m.glow}, 0.22)`,
+                    fontSize: 10, padding: '2px 8px',
+                  }}>
+                    {m.icon} {m.label}
+                  </span>
+                  <button
+                    className="icon-btn tt"
+                    data-tt="Copy"
+                    onClick={() => copy(msg.text)}
+                    style={{ width: 20, height: 20, fontSize: 11, color: 'var(--text-5)' }}
+                  >
+                    ⎘
+                  </button>
+                </div>
+                <div style={{
+                  maxWidth: '90%',
+                  background: isUser
+                    ? 'linear-gradient(135deg, rgba(96,165,250,0.18), rgba(96,165,250,0.08))'
+                    : isTool
+                    ? 'rgba(52,211,153,0.06)'
+                    : 'var(--tint-lo)',
+                  border: `1px solid ${isUser ? 'rgba(96,165,250,0.25)' : isTool ? 'rgba(52,211,153,0.18)' : 'var(--border)'}`,
+                  borderRadius: isUser ? '14px 4px 14px 14px' : '4px 14px 14px 14px',
+                  padding: isTool ? '8px 12px' : '10px 14px',
+                  fontSize: isTool ? 11.5 : 13,
+                  color: isTool ? m.color : 'var(--text-1)',
+                  lineHeight: 1.65,
+                  wordBreak: 'break-word',
+                  fontFamily: isTool ? 'var(--font-mono)' : 'inherit',
+                }}>
+                  {renderMessage(msg.text)}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </>

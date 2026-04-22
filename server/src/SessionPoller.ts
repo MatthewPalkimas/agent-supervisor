@@ -42,16 +42,31 @@ export class SessionPoller extends EventEmitter {
 
   // Track previous status per session to detect transitions
   private prevStatus = new Map<string, string>();
-  private excludeSessionIds = new Set<string>();
+  private excludePids = new Set<number>();
 
   constructor() {
     super();
     this.sessionsDir = path.join(os.homedir(), '.kiro', 'sessions', 'cli');
   }
 
-  /** Exclude a session ID from results (e.g. the supervisor's own session) */
-  setExcludeSessionId(id: string): void {
-    this.excludeSessionIds.add(id);
+  /** Exclude any session whose .lock file references this PID (or a child of it).
+   * Walks up the process tree so we catch the real agent child that owns the lock. */
+  addExcludePid(pid: number): void {
+    this.excludePids.add(pid);
+  }
+
+  /** Check if `pid` is the excluded PID or a descendant of one (up to 5 levels). */
+  private isExcludedProcess(pid: number): boolean {
+    let cur: number | null = pid;
+    for (let depth = 0; depth < 5 && cur != null && cur > 1; depth++) {
+      if (this.excludePids.has(cur)) return true;
+      try {
+        const txt: string = fs.readFileSync(`/proc/${cur}/status`, 'utf8');
+        const match: RegExpMatchArray | null = txt.match(/^PPid:\s*(\d+)/m);
+        cur = match ? parseInt(match[1], 10) : null;
+      } catch { return false; }
+    }
+    return false;
   }
 
   start(fallbackIntervalMs = 10000): void {
@@ -114,19 +129,23 @@ export class SessionPoller extends EventEmitter {
           const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
           const id: string = raw.session_id;
           if (!id) continue;
-          if (this.excludeSessionIds.has(id)) continue;
 
           // Check if process is alive
           const lockPath = path.join(this.sessionsDir, `${id}.lock`);
           let processAlive = false;
+          let lockPid: number | null = null;
           if (fs.existsSync(lockPath)) {
             try {
               const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
               if (lock.pid) {
+                lockPid = lock.pid;
                 try { process.kill(lock.pid, 0); processAlive = true; } catch { /* dead */ }
               }
             } catch { /* ignore */ }
           }
+
+          // Exclude sessions owned by a known excluded process (e.g. orchestrator/supervisor ACP)
+          if (lockPid != null && this.isExcludedProcess(lockPid)) continue;
 
           // Skip old dead sessions, but never skip alive ones
           if (!processAlive && stat.mtimeMs < cutoff) continue;
@@ -241,7 +260,6 @@ export class SessionPoller extends EventEmitter {
   getSessions(): SessionState[] {
     const now = Date.now();
     return Array.from(this.sessions.values())
-      .filter(s => !this.excludeSessionIds.has(s.id))
       .map(s => ({ ...s, elapsedMs: now - s.startTime }));
   }
 }

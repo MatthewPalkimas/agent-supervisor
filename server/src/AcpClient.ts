@@ -52,6 +52,11 @@ export class AcpClient extends EventEmitter {
     super();
   }
 
+  /** PID of the underlying kiro-cli acp process, or null if not spawned. */
+  getPid(): number | null {
+    return this.process?.pid ?? null;
+  }
+
   spawn(): void {
     const args = ['acp', '--trust-all-tools'];
     if (this.model) args.push('--model', this.model);

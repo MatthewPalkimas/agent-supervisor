@@ -29,11 +29,20 @@ const reviewsInFlight = new Set<string>();
 (async () => {
   try {
     orchestrator = new Orchestrator();
-    orchestrator.setOnSessionChange((newId) => {
-      filePoller.setExcludeSessionId(newId);
-      supervisorPoller?.addExcludeSessionId(newId);
+    orchestrator.on('activity', () => {
+      if (!orchestrator) return;
+      wsServer.broadcast(mergePending(getPollerSessions()), {
+        type: 'orchestrator_status', ready: orchestrator.isReady(), activity: orchestrator.activityLog,
+      });
     });
     await orchestrator.start();
+    // Exclude the orchestrator's entire ACP process from both pollers — race-free,
+    // covers session resets that happen between reviews.
+    const orchPid = orchestrator.getPid();
+    if (orchPid) {
+      filePoller.addExcludePid(orchPid);
+      (supervisorPoller as SupervisorPoller | null)?.addExcludePid(orchPid);
+    }
   } catch (e) {
     console.error('[Server] Orchestrator failed to start:', e);
   }
@@ -376,10 +385,9 @@ async function startSupervisor(): Promise<void> {
   await acp.newSession();
   console.log('[Server] Supervisor ACP session ready:', acp.getSessionId());
 
-  // Exclude the supervisor's own session from the file poller
-  if (acp.getSessionId()) {
-    filePoller.setExcludeSessionId(acp.getSessionId()!);
-  }
+  // Exclude the supervisor's ACP process from the file poller — race-free across resets
+  const supPid = acp.getPid();
+  if (supPid) filePoller.addExcludePid(supPid);
 
   // Prime the supervisor with its role so it never tries to use tools
   await acp.prompt(
@@ -390,11 +398,11 @@ async function startSupervisor(): Promise<void> {
   );
   await new Promise(r => setTimeout(r, 2000));
 
-  supervisorPoller = new SupervisorPoller(acp, acp.getSessionId() ?? undefined);
+  supervisorPoller = new SupervisorPoller(acp, supPid ?? undefined);
 
-  // Exclude orchestrator session from supervisor if it's already running
-  const oid = orchestrator?.getSessionId();
-  if (oid) supervisorPoller.addExcludeSessionId(oid);
+  // Exclude orchestrator process from supervisor if it's already running
+  const orchPid = orchestrator?.getPid();
+  if (orchPid) supervisorPoller.addExcludePid(orchPid);
 
   supervisorPoller.on('update', () => {
     if (!usingSupervisor) {

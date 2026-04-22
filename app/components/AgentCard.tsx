@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { SessionState } from '../types/session';
+import { useToast } from './Toast';
 
-const STATUS_CONFIG: Record<SessionState['status'], { color: string; bg: string; label: string; pulse: boolean }> = {
-  starting:   { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)', label: 'Starting',    pulse: true  },
-  busy:       { color: '#4ade80', bg: 'rgba(74,222,128,0.1)',  label: 'Busy',         pulse: true  },
-  idle:       { color: '#64748b', bg: 'rgba(100,116,139,0.1)', label: 'Idle',         pulse: false },
-  active:     { color: '#60a5fa', bg: 'rgba(96,165,250,0.1)',  label: 'Active',       pulse: false },
-  terminated: { color: '#475569', bg: 'rgba(71,85,105,0.08)',  label: 'Terminated',   pulse: false },
+const STATUS_CONFIG: Record<SessionState['status'], { color: string; glow: string; label: string; pulse: boolean }> = {
+  starting:   { color: 'var(--info)',   glow: 'var(--info-glow)',   label: 'Starting',    pulse: true  },
+  busy:       { color: 'var(--ok)',     glow: 'var(--ok-glow)',     label: 'Working',     pulse: true  },
+  idle:       { color: 'var(--idle)',   glow: 'var(--idle-glow)',   label: 'Idle',        pulse: false },
+  active:     { color: 'var(--busy)',   glow: 'var(--busy-glow)',   label: 'Active',      pulse: false },
+  terminated: { color: 'var(--text-4)', glow: '71,85,105',          label: 'Terminated',  pulse: false },
 };
-const STUCK_CONFIG = { color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', label: 'Stuck', pulse: true };
+const STUCK_CONFIG = { color: 'var(--warn)', glow: 'var(--warn-glow)', label: 'Needs attention', pulse: true };
 
 function formatElapsed(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -19,10 +20,10 @@ function formatElapsed(ms: number) {
   return `${s}s`;
 }
 
-function formatLastActivity(timestampMs: number) {
-  const ago = Date.now() - timestampMs;
-  if (ago < 5000) return 'just now';
-  const s = Math.floor(ago / 1000);
+function formatAgo(ts: number) {
+  const a = Date.now() - ts;
+  if (a < 5000) return 'just now';
+  const s = Math.floor(a / 1000);
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
   if (h > 0) return `${h}h ${m % 60}m ago`;
@@ -31,209 +32,202 @@ function formatLastActivity(timestampMs: number) {
 }
 
 function formatModel(model: string) {
-  return model
-    .replace('claude-', '')
-    .replace('us.anthropic.', '')
-    .replace(/-(\d)/, ' $1');
+  return (model || '').replace('claude-', '').replace('us.anthropic.', '').replace(/-(\d)/, ' $1');
 }
 
-export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onReview, onViewHistory }: {
+export interface AgentCardProps {
   session: SessionState;
   onSendMessage: (id: string, msg: string) => void;
   onTerminate: (id: string) => void;
   onInterrupt: (id: string) => void;
   onReview: (id: string) => void;
   onViewHistory: (id: string) => void;
-}) {
+}
+
+export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onReview, onViewHistory }: AgentCardProps) {
   const [, setTick] = useState(0);
-  const [expanded, setExpanded] = useState(false);
+  const [showSummary, setShowSummary] = useState(true);
+  const [showLast, setShowLast] = useState(false);
   const [input, setInput] = useState('');
-  const [sent, setSent] = useState(false);
-  const [confirmTerminate, setConfirmTerminate] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [sending, setSending] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const { toast } = useToast();
 
   const cfg = session.stuck ? STUCK_CONFIG : STATUS_CONFIG[session.status];
   const isAlive = session.status !== 'terminated';
 
-  // Tick every 10s to keep "last activity" timestamp fresh
   useEffect(() => {
-    const t = setInterval(() => setTick(n => n + 1), 10000);
+    const t = setInterval(() => setTick(n => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const h = () => setMenuOpen(false);
+    setTimeout(() => window.addEventListener('click', h, { once: true }), 0);
+    return () => window.removeEventListener('click', h);
+  }, [menuOpen]);
+
+  const send = () => {
+    const v = input.trim();
+    if (!v) return;
+    onSendMessage(session.id, v);
+    setInput('');
+    setSending(true);
+    toast({ kind: 'success', title: 'Message sent', body: session.name });
+    setTimeout(() => setSending(false), 1400);
+  };
+
   const terminate = () => {
-    if (!confirmTerminate) {
-      setConfirmTerminate(true);
-      setTimeout(() => setConfirmTerminate(false), 3000);
+    if (!confirmKill) {
+      setConfirmKill(true);
+      setTimeout(() => setConfirmKill(false), 3000);
       return;
     }
     onTerminate(session.id);
-    setConfirmTerminate(false);
+    setConfirmKill(false);
+    toast({ kind: 'info', title: 'Session terminated', body: session.name });
   };
 
-  const send = () => {
-    if (!input.trim()) return;
-    onSendMessage(session.id, input.trim());
-    setInput('');
-    setSent(true);
-    setTimeout(() => setSent(false), 2000);
+  const copyId = async () => {
+    try {
+      await navigator.clipboard.writeText(session.id);
+      toast({ kind: 'success', title: 'Session ID copied' });
+    } catch { toast({ kind: 'error', title: 'Copy failed' }); }
+  };
+
+  const autosize = () => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(160, el.scrollHeight) + 'px';
   };
 
   return (
-    <div style={{
-      background: '#111520',
-      border: `1px solid ${session.stuck ? 'rgba(251,191,36,0.25)' : 'rgba(255,255,255,0.06)'}`,
-      borderRadius: 12,
-      overflow: 'hidden',
-      transition: 'border-color 0.3s, box-shadow 0.3s',
-      animation: 'fadeIn 0.3s ease-out',
-    }}>
-      {/* Status accent bar */}
-      <div style={{
-        height: 2,
-        background: `linear-gradient(90deg, ${cfg.color}, transparent)`,
-        opacity: isAlive ? 0.8 : 0.3,
-      }} />
+    <div
+      className="fade-in"
+      style={{
+        position: 'relative',
+        background: 'linear-gradient(180deg, rgba(var(--panel-rgb), 0.65), rgba(var(--panel-2-rgb), 0.85))',
+        border: `1px solid ${session.stuck ? 'rgba(251,191,36,0.35)' : 'var(--border)'}`,
+        borderRadius: 14,
+        overflow: 'hidden',
+        boxShadow: session.stuck
+          ? '0 0 0 1px rgba(251,191,36,0.25), 0 12px 30px rgba(251,191,36,0.08)'
+          : '0 8px 20px rgba(0,0,0,0.35)',
+        transition: 'all 220ms',
+      }}
+    >
+      {/* Glow accent */}
+      <div
+        style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+          background: `linear-gradient(90deg, ${cfg.color}, transparent 70%)`,
+          opacity: isAlive ? 0.9 : 0.3,
+        }}
+      />
 
-      <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {/* Header row */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+      <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          {/* Avatar / icon */}
+          <div
+            style={{
+              flexShrink: 0,
+              width: 36, height: 36, borderRadius: 10,
+              display: 'grid', placeItems: 'center',
+              background: `radial-gradient(circle at 30% 30%, rgba(${cfg.glow}, 0.4), rgba(${cfg.glow}, 0.08))`,
+              border: `1px solid rgba(${cfg.glow}, 0.35)`,
+              color: cfg.color,
+              fontSize: 14,
+              fontWeight: 700,
+              boxShadow: `inset 0 1px 0 rgba(255,255,255,0.08), 0 0 14px rgba(${cfg.glow}, 0.18)`,
+            }}
+          >
+            {session.status === 'busy' ? '⚙' : session.stuck ? '⚠' : session.status === 'starting' ? '✦' : session.status === 'terminated' ? '◌' : '◉'}
+          </div>
+
           <div style={{ minWidth: 0, flex: 1 }}>
-            {/* Meta line: agent + model */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              fontSize: 11, marginBottom: 6,
-            }}>
-              <span style={{
-                color: '#475569', textTransform: 'uppercase',
-                letterSpacing: '0.06em', fontWeight: 600,
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+              <span className="mono" style={{
+                fontSize: 10, fontWeight: 700, color: 'var(--text-4)',
+                textTransform: 'uppercase', letterSpacing: '0.08em',
               }}>
                 {session.currentTask}
               </span>
               {session.model && (
                 <span style={{
-                  color: '#334155', fontSize: 10,
-                  background: 'rgba(255,255,255,0.04)',
-                  padding: '1px 6px', borderRadius: 4,
+                  fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
+                  background: 'var(--tint)', border: '1px solid var(--border)',
+                  padding: '1px 7px', borderRadius: 999,
                 }}>
                   {formatModel(session.model)}
                 </span>
               )}
             </div>
-            {/* Session name */}
-            <div style={{
-              fontSize: 14, fontWeight: 600, color: '#e2e8f0',
-              lineHeight: 1.4, wordBreak: 'break-word',
-            }}>
+            <div style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--text-0)', lineHeight: 1.4, wordBreak: 'break-word' }}>
               {session.name}
             </div>
           </div>
 
-          {/* Status + time */}
-          <div style={{
-            display: 'flex', flexDirection: 'column',
-            alignItems: 'flex-end', gap: 6, flexShrink: 0,
-          }}>
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              fontSize: 11, fontWeight: 600, color: cfg.color,
-              background: cfg.bg,
-              padding: '3px 8px', borderRadius: 20,
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: cfg.color,
-                animation: cfg.pulse ? 'pulse 2s ease-in-out infinite' : 'none',
-              }} />
+          <div style={{ position: 'relative', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+            <span className="chip" style={{ color: cfg.color, background: `rgba(${cfg.glow}, 0.1)`, borderColor: `rgba(${cfg.glow}, 0.25)` }}>
+              <span className={`dot ${cfg.pulse ? 'dot-pulse' : ''}`} style={{ color: cfg.color }} />
               {cfg.label}
             </span>
-            <span style={{
-              fontSize: 11, color: '#334155',
-              fontFamily: 'ui-monospace, monospace',
-              fontVariantNumeric: 'tabular-nums',
-            }}>
-              {formatLastActivity(session.lastActivityMs)}
+            <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-4)' }}>
+              {formatAgo(session.lastActivityMs)}
             </span>
           </div>
         </div>
 
+        {/* Meta bar */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: 'var(--text-3)',
+          padding: '6px 10px', background: 'var(--deep)', borderRadius: 8,
+          border: '1px solid var(--border)',
+        }}>
+          <span className="tt" data-tt="Click to copy" onClick={copyId} style={{ cursor: 'pointer', fontFamily: 'var(--font-mono)' }}>
+            {session.id.slice(0, 8)}
+          </span>
+          <span style={{ color: 'var(--text-5)' }}>•</span>
+          <span className="mono" title="Elapsed">{formatElapsed(session.elapsedMs)}</span>
+          {session.nudged && !session.stuck && <>
+            <span style={{ color: 'var(--text-5)' }}>•</span>
+            <span style={{ color: 'var(--busy)' }}>↩ nudged</span>
+          </>}
+        </div>
+
         {/* Badges */}
-        {(session.nudged || session.stuck || session.reviewState) && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {session.stuck && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#fbbf24',
-                background: 'rgba(251,191,36,0.08)',
-                border: '1px solid rgba(251,191,36,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                ⚠ stuck
-              </span>
-            )}
-            {session.nudged && !session.stuck && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#60a5fa',
-                background: 'rgba(96,165,250,0.08)',
-                border: '1px solid rgba(96,165,250,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                ↩ nudged
-              </span>
-            )}
-            {session.reviewState === 'reviewing' && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#a78bfa',
-                background: 'rgba(167,139,250,0.08)',
-                border: '1px solid rgba(167,139,250,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                🔍 reviewing
-              </span>
-            )}
-            {session.reviewState === 'passed' && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#4ade80',
-                background: 'rgba(74,222,128,0.08)',
-                border: '1px solid rgba(74,222,128,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                ✓ review passed
-              </span>
-            )}
+        {(session.reviewState || session.stuck) && (
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {session.stuck && <Badge color="var(--warn)" glow="var(--warn-glow)">⚠ stuck</Badge>}
+            {session.reviewState === 'reviewing'       && <Badge color="var(--info)"   glow="var(--info-glow)">🔍 reviewing</Badge>}
+            {session.reviewState === 'passed'          && <Badge color="var(--ok)"     glow="var(--ok-glow)">✓ review passed</Badge>}
             {(session.reviewState === 'correction_sent' || session.reviewState === 'awaiting_fix') && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#fb923c',
-                background: 'rgba(251,146,60,0.08)',
-                border: '1px solid rgba(251,146,60,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                ↻ fix requested ({session.reviewCount}/{3})
-              </span>
+              <Badge color="#EE8434" glow="238, 132, 52">↻ fix requested ({session.reviewCount}/3)</Badge>
             )}
             {session.reviewState === 'failed_max_retries' && (
-              <span style={{
-                fontSize: 10, fontWeight: 600, color: '#f87171',
-                background: 'rgba(248,113,113,0.08)',
-                border: '1px solid rgba(248,113,113,0.2)',
-                borderRadius: 4, padding: '2px 8px',
-              }}>
-                ✕ review failed ({session.reviewCount} attempts)
-              </span>
+              <Badge color="var(--danger)" glow="var(--danger-glow)">✕ review failed ({session.reviewCount})</Badge>
             )}
           </div>
         )}
 
         {/* Summary */}
-        {session.summary && (
-          <div style={{
-            fontSize: 12, color: '#94a3b8', lineHeight: 1.6,
-            borderLeft: `2px solid ${cfg.color}40`,
-            paddingLeft: 12,
-            background: 'rgba(0,0,0,0.15)',
-            borderRadius: '0 6px 6px 0',
-            padding: '8px 12px 8px 12px',
-            marginLeft: 0,
-          }}>
+        {session.summary && showSummary && (
+          <div
+            onClick={() => setShowSummary(false)}
+            style={{
+              fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.65,
+              background: `linear-gradient(90deg, rgba(${cfg.glow}, 0.06), var(--deep))`,
+              borderLeft: `2px solid ${cfg.color}`,
+              borderRadius: '0 8px 8px 0',
+              padding: '10px 12px',
+              cursor: 'pointer',
+            }}
+          >
             {session.summary}
           </div>
         )}
@@ -241,142 +235,119 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
         {/* Review issues */}
         {session.reviewIssues && session.reviewIssues.length > 0 && session.reviewState !== 'passed' && (
           <div style={{
-            fontSize: 11, color: '#fb923c', lineHeight: 1.5,
-            borderLeft: '2px solid rgba(251,146,60,0.4)',
-            background: 'rgba(251,146,60,0.04)',
-            borderRadius: '0 6px 6px 0',
-            padding: '6px 12px',
+            fontSize: 11.5, color: '#EE8434', lineHeight: 1.55,
+            borderLeft: '2px solid rgba(238, 132, 52,0.4)',
+            background: 'rgba(238, 132, 52,0.04)',
+            borderRadius: '0 8px 8px 0',
+            padding: '8px 12px',
           }}>
-            {session.reviewIssues.map((issue, i) => (
-              <div key={i}>• {issue}</div>
-            ))}
+            {session.reviewIssues.map((issue, i) => <div key={i}>• {issue}</div>)}
           </div>
         )}
 
-        {/* Last message toggle + history link */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* Footer actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost btn-xs" onClick={() => onViewHistory(session.id)}>
+            💬 History
+          </button>
           {session.lastMessage && (
-            <button
-              onClick={() => setExpanded(e => !e)}
-              style={{
-                background: 'none', border: 'none', padding: 0,
-                cursor: 'pointer', color: '#475569', fontSize: 11,
-                display: 'flex', alignItems: 'center', gap: 4,
-                transition: 'color 0.15s',
-              }}
-            >
-              <span style={{
-                transform: expanded ? 'rotate(90deg)' : 'none',
-                display: 'inline-block', transition: 'transform 0.15s',
-                fontSize: 13,
-              }}>›</span>
-              {expanded ? 'hide' : 'last message'}
+            <button className="btn btn-ghost btn-xs" onClick={() => setShowLast(v => !v)}>
+              {showLast ? '▾ Hide output' : '▸ Last output'}
             </button>
           )}
-          <button
-            onClick={() => onViewHistory(session.id)}
-            style={{
-              background: 'none', border: 'none', padding: 0,
-              cursor: 'pointer', color: '#475569', fontSize: 11,
-              transition: 'color 0.15s',
-            }}
-          >
-            history
-          </button>
           {isAlive && (
-            <button
-              onClick={() => onReview(session.id)}
-              style={{
-                background: 'none', border: 'none', padding: 0,
-                cursor: 'pointer', color: '#60a5fa', fontSize: 11,
-                fontWeight: 600, transition: 'color 0.15s',
-              }}
-            >
-              review
+            <button className="btn btn-ghost btn-xs" onClick={() => onReview(session.id)} style={{ color: 'var(--info)' }}>
+              🔍 Review
             </button>
+          )}
+          <div style={{ flex: 1 }} />
+          {isAlive && (
+            <button className="btn btn-ghost btn-xs tt" data-tt="Copy session ID" onClick={copyId}>⎘</button>
           )}
         </div>
 
-        {expanded && session.lastMessage && (
+        {showLast && session.lastMessage && (
           <div style={{
-            fontSize: 12, color: '#64748b', lineHeight: 1.6,
-            background: 'rgba(0,0,0,0.2)', borderRadius: 8,
-            padding: '10px 12px', maxHeight: 180, overflowY: 'auto',
+            fontSize: 12, color: 'var(--text-2)', lineHeight: 1.6,
+            background: 'var(--deep-2)', borderRadius: 8,
+            padding: '10px 12px', maxHeight: 200, overflowY: 'auto',
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            border: '1px solid rgba(255,255,255,0.04)',
+            border: '1px solid var(--border)', fontFamily: 'var(--font-mono)',
           }}>
             {session.lastMessage}
           </div>
         )}
 
-        {/* Input + actions */}
+        {/* Input area */}
         {isAlive && (
-          <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && send()}
-              placeholder="Send a message…"
-              style={{
-                flex: 1, background: 'rgba(0,0,0,0.3)',
-                border: '1px solid rgba(255,255,255,0.06)',
-                borderRadius: 8, padding: '8px 12px',
-                fontSize: 12, color: '#e2e8f0', outline: 'none',
-                transition: 'border-color 0.15s',
-              }}
-            />
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <textarea
+                ref={taRef}
+                className="textarea"
+                value={input}
+                onChange={e => { setInput(e.target.value); autosize(); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+                }}
+                rows={1}
+                placeholder="Message agent… (Shift+Enter for newline)"
+                style={{
+                  minHeight: 38, padding: '9px 12px', fontSize: 12.5,
+                  resize: 'none', lineHeight: 1.5,
+                }}
+              />
+            </div>
             <button
+              className={`btn ${sending ? '' : 'btn-primary'}`}
               onClick={send}
-              disabled={!input.trim()}
+              disabled={!input.trim() && !sending}
               style={{
-                padding: '8px 14px',
-                background: sent ? 'rgba(74,222,128,0.15)' : input.trim() ? 'rgba(59,130,246,0.7)' : 'rgba(59,130,246,0.3)',
-                color: sent ? '#4ade80' : '#e2e8f0',
-                border: 'none',
-                borderRadius: 8, cursor: input.trim() ? 'pointer' : 'default',
-                fontSize: 12, fontWeight: 600,
-                transition: 'all 0.2s',
-                opacity: input.trim() || sent ? 1 : 0.5,
+                padding: '9px 14px', height: 38,
+                background: sending ? 'rgba(52,211,153,0.15)' : undefined,
+                color: sending ? 'var(--ok)' : undefined,
+                borderColor: sending ? 'rgba(52,211,153,0.3)' : undefined,
               }}
             >
-              {sent ? '✓ Sent' : 'Send'}
+              {sending ? '✓ Sent' : 'Send'}
             </button>
             <button
+              className="btn btn-warn tt"
+              data-tt="Interrupt"
               onClick={() => onInterrupt(session.id)}
-              title="Interrupt current operation"
-              style={{
-                padding: '8px 10px',
-                background: session.status === 'busy' || session.stuck
-                  ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.04)',
-                color: session.status === 'busy' || session.stuck
-                  ? '#fbbf24' : '#475569',
-                border: `1px solid ${session.status === 'busy' || session.stuck
-                  ? 'rgba(251,191,36,0.25)' : 'transparent'}`,
-                borderRadius: 8, cursor: 'pointer', fontSize: 12,
-                fontWeight: 600, transition: 'all 0.2s',
-              }}
+              style={{ padding: '9px 11px', height: 38 }}
             >
-              ⏹ Stop
+              ⏹
             </button>
             <button
+              className="btn btn-danger tt"
+              data-tt={confirmKill ? 'Click again to confirm' : 'Terminate'}
               onClick={terminate}
-              title={confirmTerminate ? 'Click again to confirm' : 'Terminate session'}
               style={{
-                padding: '8px 10px',
-                background: confirmTerminate ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.04)',
-                color: confirmTerminate ? '#f87171' : '#475569',
-                border: `1px solid ${confirmTerminate ? 'rgba(239,68,68,0.3)' : 'transparent'}`,
-                borderRadius: 8, cursor: 'pointer', fontSize: 13,
-                transition: 'all 0.2s',
+                padding: '9px 11px', height: 38,
+                background: confirmKill ? 'rgba(248,113,113,0.18)' : undefined,
+                color: confirmKill ? 'var(--danger)' : undefined,
+                borderColor: confirmKill ? 'rgba(248,113,113,0.35)' : undefined,
               }}
             >
-              {confirmTerminate ? '✕ confirm?' : '✕'}
+              {confirmKill ? '? Confirm' : '✕'}
             </button>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function Badge({ children, color, glow }: { children: React.ReactNode; color: string; glow: string }) {
+  return (
+    <span className="chip" style={{
+      color,
+      background: `rgba(${glow}, 0.08)`,
+      borderColor: `rgba(${glow}, 0.28)`,
+      fontSize: 10,
+    }}>
+      {children}
+    </span>
   );
 }

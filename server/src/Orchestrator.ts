@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { EventEmitter } from 'events';
 import { AcpClient } from './AcpClient';
 import { ReviewTracker, ReviewState } from './ReviewTracker';
 
@@ -37,36 +38,27 @@ export interface OrchestratorActivity {
   issues?: string[];
 }
 
-export class Orchestrator {
+export class Orchestrator extends EventEmitter {
   private acp: AcpClient;
   private sessionId: string | null = null;
   private ready = false;
-  private ownSessionIds = new Set<string>();
-  private onSessionChange?: (newId: string) => void;
   readonly tracker = new ReviewTracker();
   readonly activityLog: OrchestratorActivity[] = [];
 
   constructor() {
+    super();
     this.acp = new AcpClient();
   }
 
   getSessionId(): string | null { return this.sessionId; }
 
-  /** Register a callback invoked whenever the orchestrator's session ID changes (e.g. after reset). */
-  setOnSessionChange(cb: (newId: string) => void): void {
-    this.onSessionChange = cb;
-  }
-
-  private trackSessionId(id: string): void {
-    this.ownSessionIds.add(id);
-    this.onSessionChange?.(id);
-  }
+  /** PID of the underlying kiro-cli acp process (for excluding its sessions from polling). */
+  getPid(): number | null { return this.acp.getPid(); }
 
   async start(): Promise<void> {
     this.acp.spawn();
     await this.acp.initialize();
     this.sessionId = await this.acp.newSession();
-    this.trackSessionId(this.sessionId);
     await this.acp.prompt(SYSTEM_PROMPT + '\n\nSay "ready" to confirm.');
     this.ready = true;
     console.log('[Orchestrator] Ready, session:', this.sessionId!.slice(0, 8));
@@ -84,11 +76,6 @@ export class Orchestrator {
   ): Promise<ReviewResult> {
     if (!this.ready) throw new Error('Orchestrator not ready');
 
-    // Never review our own sessions
-    if (this.ownSessionIds.has(workerSessionId)) {
-      return { verdict: 'pass', issues: [], message: '', reviewState: 'passed', reviewCount: 0 };
-    }
-
     this.tracker.markReviewing(workerSessionId);
     this.logActivity(workerSessionId, 'review_started');
     const history = this.loadHistory(workerSessionId);
@@ -100,7 +87,6 @@ export class Orchestrator {
     // Reset context before each review to avoid cross-contamination
     try {
       this.sessionId = await this.acp.resetSession();
-      this.trackSessionId(this.sessionId);
       await this.acp.prompt(SYSTEM_PROMPT + '\n\nSay "ready" to confirm.');
     } catch {
       console.warn('[Orchestrator] Failed to reset session, continuing with existing context');
@@ -306,5 +292,6 @@ export class Orchestrator {
     this.activityLog.push({ timestamp: Date.now(), sessionId, action, issues });
     // Keep last 100 entries
     if (this.activityLog.length > 100) this.activityLog.splice(0, this.activityLog.length - 100);
+    this.emit('activity');
   }
 }
