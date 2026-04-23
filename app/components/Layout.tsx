@@ -28,7 +28,7 @@ export function Layout({
   const tabs = [
     { href: '/', label: 'Sessions', icon: '◆' },
     { href: '/orchestrator', label: 'Orchestrator', icon: '◈' },
-    { href: '/history', label: 'History', icon: '◇' },
+    { href: '/history', label: 'Sessions', icon: '◇' },
   ];
 
   return (

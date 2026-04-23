@@ -48,7 +48,7 @@ export class AcpClient extends EventEmitter {
     reject: (e: Error) => void;
   }> = [];
 
-  constructor(private model?: string) {
+  constructor(private model?: string, private agent?: string) {
     super();
   }
 
@@ -60,6 +60,7 @@ export class AcpClient extends EventEmitter {
   spawn(): void {
     const args = ['acp', '--trust-all-tools'];
     if (this.model) args.push('--model', this.model);
+    if (this.agent) args.push('--agent', this.agent);
     this.process = spawn('kiro-cli', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });

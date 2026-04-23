@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { AgentCard } from '../components/AgentCard';
 import { Layout } from '../components/Layout';
-import { HistoryDrawer } from '../components/HistoryDrawer';
+import { SessionChat } from '../components/HistoryDrawer';
 import { NewSessionModal } from '../components/NewSessionModal';
 import { CommandPalette } from '../components/CommandPalette';
 import { useToast } from '../components/Toast';
@@ -15,6 +15,7 @@ export default function Home() {
   const {
     sessions, sendMessage, terminateSession, interruptSession, reviewSession,
     startSession, getHistory, clearHistory, history, connected,
+    steeringDocs, getSteeringDocs,
   } = useWebSocket();
   const { toast } = useToast();
 
@@ -71,9 +72,9 @@ export default function Home() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const handleStart = (prompt: string, model: string) => {
-    startSession(prompt, model);
-    toast({ kind: 'success', title: 'Session requested', body: model });
+  const handleStart = (prompt: string, model: string, agent: string, steeringDoc?: string) => {
+    startSession(prompt, model, agent, steeringDoc);
+    toast({ kind: 'success', title: 'Session requested', body: `${agent} / ${model}` });
   };
 
   const stats = { active: counts.all, busy: counts.busy, stuck: counts.stuck, terminated: terminated.length };
@@ -100,7 +101,7 @@ export default function Home() {
               Monitor and orchestrate all running kiro-cli agents.
               {terminated.length > 0 && (
                 <Link href="/history" style={{ marginLeft: 6, color: 'var(--text-2)', textDecoration: 'underline', textUnderlineOffset: 2 }}>
-                  {terminated.length} in history →
+                  {terminated.length} in sessions →
                 </Link>
               )}
             </div>
@@ -194,14 +195,17 @@ export default function Home() {
       )}
 
       {showNewSession && (
-        <NewSessionModal onStart={handleStart} onClose={() => setShowNewSession(false)} />
+        <NewSessionModal onStart={handleStart} onClose={() => setShowNewSession(false)} steeringDocs={steeringDocs} getSteeringDocs={getSteeringDocs} />
       )}
 
       {history && (
-        <HistoryDrawer
+        <SessionChat
+          sessionId={history.sessionId}
           sessionName={sessions.find(s => s.id === history.sessionId)?.name ?? history.sessionId.slice(0, 8)}
           messages={history.messages}
           onClose={clearHistory}
+          onRefresh={() => getHistory(history.sessionId)}
+          onSend={sendMessage}
         />
       )}
 

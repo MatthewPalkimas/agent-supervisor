@@ -42,13 +42,18 @@ function renderMessage(text: string) {
   });
 }
 
-export function HistoryDrawer({ sessionName, messages, onClose }: {
+export function SessionChat({ sessionId, sessionName, messages, onClose, onRefresh, onSend }: {
+  sessionId: string;
   sessionName: string;
   messages: HistoryMessage[];
   onClose: () => void;
+  onRefresh: () => void;
+  onSend: (sessionId: string, message: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -57,8 +62,24 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  // Poll for updates while the drawer is open
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const interval = setInterval(onRefresh, 2000);
+    return () => clearInterval(interval);
+  }, [onRefresh]);
+
+  // Scroll to bottom on first open
+  const initialScroll = useRef(true);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (initialScroll.current) {
+      el.scrollTop = el.scrollHeight;
+      initialScroll.current = false;
+      return;
+    }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const filtered = useMemo(() => {
@@ -223,6 +244,55 @@ export function HistoryDrawer({ sessionName, messages, onClose }: {
               </div>
             );
           })}
+        </div>
+
+        {/* Message input */}
+        <div style={{
+          padding: '12px 22px 14px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex', gap: 8, alignItems: 'flex-end',
+        }}>
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (draft.trim()) {
+                  onSend(sessionId, draft.trim());
+                  setDraft('');
+                  setTimeout(onRefresh, 500);
+                }
+              }
+            }}
+            placeholder="Send a message…"
+            rows={1}
+            style={{
+              flex: 1, fontSize: 13, lineHeight: 1.5,
+              padding: '9px 12px',
+              background: 'var(--deep)',
+              border: '1px solid var(--border)',
+              borderRadius: 10,
+              color: 'var(--text-1)',
+              resize: 'none',
+              fontFamily: 'inherit',
+            }}
+          />
+          <button
+            className="btn btn-primary"
+            disabled={!draft.trim()}
+            onClick={() => {
+              if (draft.trim()) {
+                onSend(sessionId, draft.trim());
+                setDraft('');
+                setTimeout(onRefresh, 500);
+              }
+            }}
+            style={{ padding: '9px 16px', fontSize: 12.5 }}
+          >
+            Send
+          </button>
         </div>
       </div>
     </>

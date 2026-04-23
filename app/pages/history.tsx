@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { AgentCard } from '../components/AgentCard';
 import { Layout } from '../components/Layout';
-import { HistoryDrawer } from '../components/HistoryDrawer';
+import { SessionChat } from '../components/HistoryDrawer';
 
 export default function History() {
   const { sessions, sendMessage, getHistory, clearHistory, history, connected } = useWebSocket();
@@ -39,13 +39,13 @@ export default function History() {
       }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 800, color: 'var(--text-0)', letterSpacing: '-0.03em', margin: 0 }}>
-            History
+            Sessions
             <span style={{ color: 'var(--text-4)', fontWeight: 500, fontSize: 15, marginLeft: 10 }}>
               {terminated.length} terminated session{terminated.length !== 1 ? 's' : ''}
             </span>
           </h1>
           <div style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 6 }}>
-            Browse completed agents and their full conversation history.
+            Browse completed agents and their conversations.
           </div>
         </div>
       </div>
@@ -113,10 +113,13 @@ export default function History() {
       )}
 
       {history && (
-        <HistoryDrawer
+        <SessionChat
+          sessionId={history.sessionId}
           sessionName={terminated.find(s => s.id === history.sessionId)?.name ?? history.sessionId.slice(0, 8)}
           messages={history.messages}
           onClose={clearHistory}
+          onRefresh={() => getHistory(history.sessionId)}
+          onSend={sendMessage}
         />
       )}
     </Layout>

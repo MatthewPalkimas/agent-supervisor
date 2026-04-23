@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 
+const AGENTS = [
+  { id: 'amzn-builder',  label: 'Builder',  desc: 'Amazon dev tools agent', accent: '#E8912D' },
+  { id: 'kiro_default',  label: 'Default',  desc: 'General-purpose agent',  accent: '#6C8EBF' },
+];
+
 const MODELS = [
   { id: 'claude-sonnet-4.6', label: 'Sonnet 4.6', desc: 'Balanced, default',    tag: 'Default', accent: '#054A91' },
   { id: 'claude-opus-4.6',   label: 'Opus 4.6',   desc: 'Most capable',          tag: 'Pro',     accent: '#C95D63' },
@@ -16,12 +21,16 @@ const TEMPLATES = [
   { label: 'Explain code',      prompt: 'Explain how the following code works: ' },
 ];
 
-export function NewSessionModal({ onStart, onClose }: {
-  onStart: (prompt: string, model: string) => void;
+export function NewSessionModal({ onStart, onClose, steeringDocs, getSteeringDocs }: {
+  onStart: (prompt: string, model: string, agent: string, steeringDoc?: string) => void;
   onClose: () => void;
+  steeringDocs: { filename: string; name: string; desc: string }[];
+  getSteeringDocs: () => void;
 }) {
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('claude-sonnet-4.6');
+  const [agent, setAgent] = useState('amzn-builder');
+  const [steeringDoc, setSteeringDoc] = useState<string | undefined>('Brazil.md');
   const [starting, setStarting] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -32,10 +41,11 @@ export function NewSessionModal({ onStart, onClose }: {
   }, [onClose]);
 
   useEffect(() => { setTimeout(() => taRef.current?.focus(), 30); }, []);
+  useEffect(() => { getSteeringDocs(); }, [getSteeringDocs]);
 
   const start = () => {
     setStarting(true);
-    onStart(prompt, model);
+    onStart(prompt, model, agent, steeringDoc);
     setTimeout(onClose, 400);
   };
 
@@ -132,6 +142,105 @@ export function NewSessionModal({ onStart, onClose }: {
               })}
             </div>
           </div>
+
+          {/* Agent selector */}
+          <div>
+            <div style={{
+              fontSize: 10.5, color: 'var(--text-4)', textTransform: 'uppercase',
+              letterSpacing: '0.08em', fontWeight: 700, marginBottom: 10,
+            }}>Agent</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {AGENTS.map(a => {
+                const selected = agent === a.id;
+                return (
+                  <button
+                    key={a.id}
+                    onClick={() => setAgent(a.id)}
+                    style={{
+                      flex: 1, textAlign: 'left', padding: '10px 14px',
+                      borderRadius: 10,
+                      background: selected
+                        ? `linear-gradient(135deg, ${a.accent}22, ${a.accent}08)`
+                        : 'var(--tint-lo)',
+                      border: `1px solid ${selected ? a.accent : 'var(--border)'}`,
+                      color: 'var(--text-1)',
+                      transition: 'all 180ms',
+                      cursor: 'pointer',
+                      boxShadow: selected ? `0 0 0 1px ${a.accent}30, 0 6px 18px ${a.accent}22` : 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{
+                        width: 7, height: 7, borderRadius: 999,
+                        background: a.accent,
+                        boxShadow: `0 0 8px ${a.accent}`,
+                      }} />
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-0)' }}>{a.label}</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>{a.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Steering doc */}
+          {steeringDocs.length > 0 && (
+            <div>
+              <div style={{
+                fontSize: 10.5, color: 'var(--text-4)', textTransform: 'uppercase',
+                letterSpacing: '0.08em', fontWeight: 700, marginBottom: 10,
+              }}>Steering doc <span style={{ color: 'var(--text-5)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>optional</span></div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {steeringDocs.map(d => {
+                  const selected = steeringDoc === d.filename;
+                  const accent = '#4ADE80';
+                  return (
+                    <button
+                      key={d.filename}
+                      onClick={() => setSteeringDoc(selected ? undefined : d.filename)}
+                      style={{
+                        flex: '1 1 0', minWidth: 120, textAlign: 'left', padding: '10px 14px',
+                        borderRadius: 10,
+                        background: selected
+                          ? `linear-gradient(135deg, ${accent}22, ${accent}08)`
+                          : 'var(--tint-lo)',
+                        border: `1px solid ${selected ? accent : 'var(--border)'}`,
+                        color: 'var(--text-1)', transition: 'all 180ms', cursor: 'pointer',
+                        boxShadow: selected ? `0 0 0 1px ${accent}30, 0 6px 18px ${accent}22` : 'none',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          width: 7, height: 7, borderRadius: 999,
+                          background: accent, boxShadow: `0 0 8px ${accent}`,
+                        }} />
+                        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-0)' }}>{d.name}</span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>{d.desc || d.filename}</div>
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => setSteeringDoc(undefined)}
+                  style={{
+                    flex: '1 1 0', minWidth: 120, textAlign: 'left', padding: '10px 14px',
+                    borderRadius: 10,
+                    background: !steeringDoc ? 'linear-gradient(135deg, #66666622, #66666608)' : 'var(--tint-lo)',
+                    border: `1px solid ${!steeringDoc ? '#888' : 'var(--border)'}`,
+                    color: 'var(--text-1)', transition: 'all 180ms', cursor: 'pointer',
+                    boxShadow: !steeringDoc ? '0 0 0 1px #88888830, 0 6px 18px #88888822' : 'none',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 14, opacity: 0.5 }}>∅</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-0)' }}>None</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 4 }}>No extra context</div>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Quick templates */}
           <div>

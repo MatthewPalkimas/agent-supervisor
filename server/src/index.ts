@@ -87,6 +87,9 @@ interface PendingSession {
 }
 const pendingSessions = new Map<string, PendingSession>(); // keyed by tempId
 
+/** Persistent session titles — once set, never overwritten by the poller. */
+const sessionTitles = new Map<string, string>(); // keyed by real session ID
+
 /**
  * Get the best session data available.
  * The file poller provides real-time status (busy/idle) via fs.watch.
@@ -95,6 +98,12 @@ const pendingSessions = new Map<string, PendingSession>(); // keyed by tempId
  */
 function getPollerSessions(): SessionState[] {
   const fileSessions = filePoller.getSessions();
+
+  // Apply persistent titles
+  for (const s of fileSessions) {
+    const t = sessionTitles.get(s.id);
+    if (t) s.name = t;
+  }
 
   if (!usingSupervisor || !supervisorPoller) return fileSessions;
 
@@ -245,6 +254,27 @@ wsServer.on('getOrchestrator', (payload: unknown) => {
   }
 });
 
+const STEERING_DIR = path.join(__dirname, '..', '..', 'steering');
+
+wsServer.on('getSteeringDocs', (payload: unknown) => {
+  const { ws } = payload as { ws: WebSocket };
+  try {
+    const files = fs.readdirSync(STEERING_DIR).filter(f => f.endsWith('.md'));
+    const docs = files.map(f => {
+      const content = fs.readFileSync(path.join(STEERING_DIR, f), 'utf8');
+      const firstLine = content.split('\n').find(l => l.trim() && !l.startsWith('#')) || '';
+      return { filename: f, name: f.replace(/\.md$/, ''), desc: firstLine.trim() };
+    });
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'steering_docs', docs }));
+    }
+  } catch {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'steering_docs', docs: [] }));
+    }
+  }
+});
+
 wsServer.on('terminateSession', (payload: unknown) => {
   const { sessionId } = payload as { sessionId: string };
   const lockPath = path.join(os.homedir(), '.kiro', 'sessions', 'cli', `${sessionId}.lock`);
@@ -260,13 +290,40 @@ wsServer.on('terminateSession', (payload: unknown) => {
 });
 
 wsServer.on('startSession', (payload: unknown) => {
-  const { prompt, model } = payload as { prompt: string; model?: string };
+  const { prompt, model, agent, steeringDoc } = payload as { prompt: string; model?: string; agent?: string; steeringDoc?: string };
+
+  // Prepend steering doc content if selected
+  let fullPrompt = prompt;
+  if (steeringDoc) {
+    try {
+      const content = fs.readFileSync(path.join(STEERING_DIR, steeringDoc), 'utf8');
+      fullPrompt = `<steering>\n${content}\n</steering>\n\n${prompt}`;
+    } catch (e) {
+      console.error('[Server] Failed to read steering doc:', e);
+    }
+  }
+
   const tempId = `pending-${Date.now()}`;
   const now = Date.now();
 
+  // Generate a clean title from the user's prompt (not the full prompt with steering doc)
+  const titlePrefixes = [
+    'Investigate and fix the following bug: ',
+    'Add the following feature: ',
+    'Refactor the following code to improve readability and maintainability: ',
+    'Write unit tests for: ',
+    'Review the following code and suggest improvements: ',
+    'Explain how the following code works: ',
+  ];
+  let title = prompt.trim();
+  for (const p of titlePrefixes) {
+    if (title.startsWith(p)) { title = title.slice(p.length).trim(); break; }
+  }
+  title = (title || 'New Session').slice(0, 70);
+
   const placeholder: SessionState = {
     id: tempId,
-    name: prompt.trim() || 'New Session',
+    name: title,
     status: 'starting',
     currentTask: 'kiro_default',
     lastMessage: '',
@@ -283,14 +340,17 @@ wsServer.on('startSession', (payload: unknown) => {
   pendingSessions.set(tempId, { placeholder, createdAt: now });
   broadcastAll();
 
-  spawnWorkerSession(prompt, model)
+  spawnWorkerSession(fullPrompt, model, agent || 'amzn-builder')
     .then(({ sessionId, acp: workerAcp }) => {
       workerClients.set(sessionId, workerAcp);
       workerAcp.on('exit', () => workerClients.delete(sessionId));
 
       // Attach real ID so mergePending can transition cleanly
       const pending = pendingSessions.get(tempId);
-      if (pending) pending.realId = sessionId;
+      if (pending) {
+        pending.realId = sessionId;
+        sessionTitles.set(sessionId, pending.placeholder.name);
+      }
 
       broadcastAll();
       supervisorPoller?.triggerPoll();
@@ -369,7 +429,7 @@ filePoller.on('sessionTransition', (payload: unknown) => {
 filePoller.start(10000);
 
 async function startSupervisor(): Promise<void> {
-  const acp = new AcpClient();
+  const acp = new AcpClient(undefined, 'amzn-builder');
   currentAcp = acp;
 
   acp.on('exit', (code: number) => {

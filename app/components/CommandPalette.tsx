@@ -39,7 +39,7 @@ export function CommandPalette({
       { id: 'theme', label: theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode', icon: theme === 'dark' ? '☀' : '☾', section: 'Actions', run: () => { toggle(); onClose(); } },
       { id: 'nav-sessions', label: 'Go to Sessions',         icon: '◆', section: 'Navigate', run: () => { router.push('/'); onClose(); } },
       { id: 'nav-orch',     label: 'Go to Orchestrator',     icon: '◈', section: 'Navigate', run: () => { router.push('/orchestrator'); onClose(); } },
-      { id: 'nav-hist',     label: 'Go to History',          icon: '◇', section: 'Navigate', run: () => { router.push('/history'); onClose(); } },
+      { id: 'nav-hist',     label: 'Go to Sessions',          icon: '◇', section: 'Navigate', run: () => { router.push('/history'); onClose(); } },
     ];
     const sessCmds: Command[] = sessions
       .filter(s => s.status !== 'terminated')

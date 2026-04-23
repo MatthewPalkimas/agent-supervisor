@@ -136,6 +136,7 @@ body {
   font-family: var(--font-sans);
   font-feature-settings: 'cv11', 'ss01', 'ss03';
   background: var(--body-bg);
+  background-attachment: fixed;
   color: var(--text-1);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;

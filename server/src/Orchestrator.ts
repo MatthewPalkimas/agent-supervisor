@@ -100,7 +100,9 @@ export class Orchestrator extends EventEmitter {
     }
 
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      // Try to extract JSON from response — handle code fences, prose wrapping, etc.
+      const stripped = response.replace(/```(?:json)?\s*/g, '').replace(/```/g, '');
+      const jsonMatch = stripped.match(/\{[\s\S]*?"verdict"[\s\S]*?\}/);
       if (!jsonMatch) { this.tracker.markPassed(workerSessionId); return this.result(workerSessionId); }
 
       const parsed = JSON.parse(jsonMatch[0]) as { verdict: string; issues: string[]; message: string };

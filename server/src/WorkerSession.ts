@@ -9,8 +9,8 @@ export interface WorkerResult {
  * Spawns a new kiro-cli acp process as a headless worker session.
  * Returns the session ID and ACP client once ready. The process stays alive until terminated.
  */
-export async function spawnWorkerSession(prompt: string, model?: string): Promise<WorkerResult> {
-  const acp = new AcpClient(model);
+export async function spawnWorkerSession(prompt: string, model?: string, agent: string = 'amzn-builder'): Promise<WorkerResult> {
+  const acp = new AcpClient(model, agent);
 
   acp.spawn();
   await acp.initialize();

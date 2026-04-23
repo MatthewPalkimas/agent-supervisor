@@ -28,7 +28,7 @@ export class WsServer {
           this.emit('terminateSession', { sessionId: msg.sessionId });
         }
         if (msg.type === 'start_session' && msg.prompt !== undefined) {
-          this.emit('startSession', { prompt: msg.prompt, model: msg.model });
+          this.emit('startSession', { prompt: msg.prompt, model: msg.model, agent: msg.agent, steeringDoc: msg.steeringDoc });
         }
         if (msg.type === 'get_history' && msg.sessionId) {
           this.emit('getHistory', { sessionId: msg.sessionId, ws });
@@ -41,6 +41,9 @@ export class WsServer {
         }
         if (msg.type === 'get_orchestrator') {
           this.emit('getOrchestrator', { ws });
+        }
+        if (msg.type === 'get_steering_docs') {
+          this.emit('getSteeringDocs', { ws });
         }
       } catch (e) {
         console.error('[WS] Failed to parse client message:', e);

@@ -248,7 +248,7 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
         {/* Footer actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-xs" onClick={() => onViewHistory(session.id)}>
-            💬 History
+            💬 Chat
           </button>
           {session.lastMessage && (
             <button className="btn btn-ghost btn-xs" onClick={() => setShowLast(v => !v)}>

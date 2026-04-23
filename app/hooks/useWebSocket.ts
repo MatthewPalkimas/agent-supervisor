@@ -22,6 +22,7 @@ export function useWebSocket() {
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<{ sessionId: string; messages: HistoryMessage[] } | null>(null);
   const [orchestratorStatus, setOrchestratorStatus] = useState<OrchestratorStatus>({ ready: false, activity: [] });
+  const [steeringDocs, setSteeringDocs] = useState<{ filename: string; name: string; desc: string }[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -46,6 +47,9 @@ export function useWebSocket() {
           }
           if (msg.type === 'orchestrator_status') {
             setOrchestratorStatus({ ready: msg.ready, activity: msg.activity });
+          }
+          if (msg.type === 'steering_docs') {
+            setSteeringDocs(msg.docs ?? []);
           }
         } catch (e) { console.error('WS parse error', e); }
       };
@@ -77,9 +81,14 @@ export function useWebSocket() {
       wsRef.current.send(JSON.stringify({ type: 'review', sessionId }));
   }, []);
 
-  const startSession = useCallback((prompt: string, model?: string) => {
+  const startSession = useCallback((prompt: string, model?: string, agent?: string, steeringDoc?: string) => {
     wsRef.current?.readyState === WebSocket.OPEN &&
-      wsRef.current.send(JSON.stringify({ type: 'start_session', prompt, model }));
+      wsRef.current.send(JSON.stringify({ type: 'start_session', prompt, model, agent, steeringDoc }));
+  }, []);
+
+  const getSteeringDocs = useCallback(() => {
+    wsRef.current?.readyState === WebSocket.OPEN &&
+      wsRef.current.send(JSON.stringify({ type: 'get_steering_docs' }));
   }, []);
 
   const getOrchestratorStatus = useCallback(() => {
@@ -94,5 +103,5 @@ export function useWebSocket() {
 
   const clearHistory = useCallback(() => setHistory(null), []);
 
-  return { sessions, sendMessage, terminateSession, interruptSession, reviewSession, startSession, getHistory, clearHistory, history, connected, orchestratorStatus, getOrchestratorStatus };
+  return { sessions, sendMessage, terminateSession, interruptSession, reviewSession, startSession, getHistory, clearHistory, history, connected, orchestratorStatus, getOrchestratorStatus, steeringDocs, getSteeringDocs };
 }
