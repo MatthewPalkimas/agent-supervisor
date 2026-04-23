@@ -296,4 +296,11 @@ export class Orchestrator extends EventEmitter {
     if (this.activityLog.length > 100) this.activityLog.splice(0, this.activityLog.length - 100);
     this.emit('activity');
   }
+
+  /** Send a prompt and return the text response. Used for lightweight tasks like title generation. */
+  async promptForText(message: string): Promise<string | null> {
+    if (!this.ready || !this.sessionId) return null;
+    await this.acp.prompt(message);
+    return this.getLastAssistantMessage();
+  }
 }

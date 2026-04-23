@@ -20,6 +20,8 @@ export interface SessionState {
   /** Timestamp (ms) of the last activity (last .jsonl write) */
   lastActivityMs: number;
   hasPendingTasks: boolean;
+  /** Code review links extracted from agent output */
+  crLinks?: string[];
 }
 
 /**
@@ -158,7 +160,7 @@ export class SessionPoller extends EventEmitter {
           const startTime = this.sessionStartTimes.get(id)!;
 
           const jsonlPath = path.join(this.sessionsDir, `${id}.jsonl`);
-          const { lastKind, lastText, hasUnresolvedTool } = this.readLastJsonlEvents(jsonlPath);
+          const { lastKind, lastText, hasUnresolvedTool, crLinks } = this.readLastJsonlEvents(jsonlPath);
           let lastActivityMs = now;
           try { lastActivityMs = fs.statSync(jsonlPath).mtimeMs; } catch { /* use now */ }
 
@@ -189,6 +191,7 @@ export class SessionPoller extends EventEmitter {
             elapsedMs: now - startTime,
             lastActivityMs,
             hasPendingTasks: false,
+            crLinks,
           });
         } catch { /* skip */ }
       }
@@ -220,14 +223,19 @@ export class SessionPoller extends EventEmitter {
     }
   }
 
-  private readLastJsonlEvents(jsonlPath: string): { lastKind: string; lastText: string; hasUnresolvedTool: boolean } {
+  private readLastJsonlEvents(jsonlPath: string): { lastKind: string; lastText: string; hasUnresolvedTool: boolean; crLinks: string[] } {
     try {
       const content = fs.readFileSync(jsonlPath, 'utf8');
+
+      // Extract CR links from the entire file content
+      const crMatches = content.match(/CR-[0-9]{6,}/g);
+      const crLinks = crMatches ? [...new Set(crMatches)] : [];
+
       const lines = content.trim().split('\n').filter(Boolean);
-      if (!lines.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false };
+      if (!lines.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks };
 
       const recent = lines.slice(-10).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-      if (!recent.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false };
+      if (!recent.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks };
 
       const last = recent[recent.length - 1];
       const lastKind: string = last?.kind ?? '';
@@ -251,9 +259,9 @@ export class SessionPoller extends EventEmitter {
         hasUnresolvedTool = hasToolUse && !hasToolResultAfter;
       }
 
-      return { lastKind, lastText, hasUnresolvedTool };
+      return { lastKind, lastText, hasUnresolvedTool, crLinks };
     } catch {
-      return { lastKind: '', lastText: '', hasUnresolvedTool: false };
+      return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks: [] };
     }
   }
 
@@ -261,5 +269,27 @@ export class SessionPoller extends EventEmitter {
     const now = Date.now();
     return Array.from(this.sessions.values())
       .map(s => ({ ...s, elapsedMs: now - s.startTime }));
+  }
+
+  /** Read the first user prompt from a session's .jsonl file. */
+  getFirstPrompt(sessionId: string): string | null {
+    const jsonlPath = path.join(this.sessionsDir, `${sessionId}.jsonl`);
+    try {
+      const content = fs.readFileSync(jsonlPath, 'utf8');
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const ev = JSON.parse(line);
+          if (ev.kind === 'HumanMessage' || ev.kind === 'UserMessage' || ev.kind === 'Prompt') {
+            const text = (ev.data?.content ?? [])
+              .filter((b: { kind: string }) => b.kind === 'text')
+              .map((b: { data: unknown }) => String(b.data))
+              .join('');
+            if (text) return text;
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* file not found */ }
+    return null;
   }
 }

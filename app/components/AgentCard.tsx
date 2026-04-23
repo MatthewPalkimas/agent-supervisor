@@ -215,6 +215,29 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
           </div>
         )}
 
+        {/* CR Links */}
+        {session.crLinks && session.crLinks.length > 0 && (
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {session.crLinks.map(cr => (
+              <a
+                key={cr}
+                href={`https://code.amazon.com/reviews/${cr}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="chip"
+                style={{
+                  fontSize: 10, textDecoration: 'none',
+                  color: 'var(--info)', background: 'rgba(var(--info-glow), 0.08)',
+                  borderColor: 'rgba(var(--info-glow), 0.28)',
+                  cursor: 'pointer',
+                }}
+              >
+                🔗 {cr}
+              </a>
+            ))}
+          </div>
+        )}
+
         {/* Summary */}
         {session.summary && showSummary && (
           <div

@@ -19,4 +19,6 @@ export interface SessionState {
   reviewState?: string;
   reviewCount?: number;
   reviewIssues?: string[];
+  /** Code review links extracted from agent output */
+  crLinks?: string[];
 }

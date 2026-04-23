@@ -89,6 +89,28 @@ const pendingSessions = new Map<string, PendingSession>(); // keyed by tempId
 
 /** Persistent session titles — once set, never overwritten by the poller. */
 const sessionTitles = new Map<string, string>(); // keyed by real session ID
+/** Sessions we've already attempted title generation for. */
+const titleGenAttempted = new Set<string>();
+
+/** Generate an AI title for a session using the orchestrator ACP. */
+async function generateTitle(sessionId: string): Promise<void> {
+  if (titleGenAttempted.has(sessionId) || sessionTitles.has(sessionId)) return;
+  titleGenAttempted.add(sessionId);
+
+  const prompt = filePoller.getFirstPrompt(sessionId);
+  if (!prompt || !orchestrator?.isReady()) return;
+
+  try {
+    const titlePrompt = `Summarize this task in 6 words or fewer as a short dashboard title. Reply with ONLY the title, no quotes, no punctuation at the end.\n\nTask: ${prompt.slice(0, 500)}`;
+    const title = await orchestrator.promptForText(titlePrompt);
+    if (title) {
+      sessionTitles.set(sessionId, title.slice(0, 70));
+      broadcastAll();
+    }
+  } catch (e) {
+    console.error(`[TitleGen] Failed for ${sessionId.slice(0, 8)}:`, e);
+  }
+}
 
 /**
  * Get the best session data available.
@@ -418,6 +440,10 @@ filePoller.on('stateChange', () => {
 // Per-session transitions feed the ReviewTracker for auto-review
 filePoller.on('sessionTransition', (payload: unknown) => {
   const { sessionId, status } = payload as { sessionId: string; status: string };
+
+  // Generate AI title for new sessions
+  generateTitle(sessionId);
+
   if (orchestrator?.isReady()) {
     const mappedStatus = status === 'busy' ? 'busy' : 'idle';
     const shouldReview = orchestrator.tracker.onStatusUpdate(sessionId, mappedStatus);
