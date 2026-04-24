@@ -24,7 +24,14 @@ export default function Home() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'grid' | 'list'>('grid');
+  const [, setTick] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Single timer for all cards' elapsed time display
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const active = sessions.filter(s => s.status !== 'terminated');
   const terminated = sessions.filter(s => s.status === 'terminated');

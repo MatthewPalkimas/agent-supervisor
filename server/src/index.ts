@@ -30,10 +30,7 @@ const reviewsInFlight = new Set<string>();
   try {
     orchestrator = new Orchestrator();
     orchestrator.on('activity', () => {
-      if (!orchestrator) return;
-      wsServer.broadcast(mergePending(getPollerSessions()), {
-        type: 'orchestrator_status', ready: orchestrator.isReady(), activity: orchestrator.activityLog,
-      });
+      broadcastAll();
     });
     await orchestrator.start();
     // Exclude the orchestrator's entire ACP process from both pollers — race-free,
@@ -68,11 +65,8 @@ function triggerAutoReview(sessionId: string): void {
   orchestrator.review(sessionId, makeSendToWorker(sessionId))
     .then(result => {
       console.log(`[AutoReview] ${sessionId.slice(0, 8)}: ${result.reviewState} (${result.reviewCount} reviews)`);
-      wsServer.broadcast(mergePending(getPollerSessions()), { type: 'review_result', sessionId, ...result });
-      // Also broadcast updated activity log
-      wsServer.broadcast(mergePending(getPollerSessions()), {
-        type: 'orchestrator_status', ready: true, activity: orchestrator!.activityLog,
-      });
+      wsServer.sendAll({ type: 'review_result', sessionId, ...result });
+      broadcastAll();
     })
     .catch(e => console.error(`[AutoReview] ${sessionId.slice(0, 8)} error:`, e))
     .finally(() => reviewsInFlight.delete(sessionId));
@@ -211,15 +205,20 @@ function mergePending(sessions: SessionState[]): SessionState[] {
 }
 
 /** Broadcast current state (poller + pending) to all clients.
- *  Coalesced via microtask so rapid-fire calls collapse into one frame. */
-let broadcastQueued = false;
+ *  Throttled to max 1 broadcast/sec. Skips if payload is identical to last send. */
+let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+let lastBroadcastHash = '';
 function broadcastAll(): void {
-  if (broadcastQueued) return;
-  broadcastQueued = true;
-  queueMicrotask(() => {
-    broadcastQueued = false;
-    wsServer.broadcast(mergePending(getPollerSessions()));
-  });
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null;
+    const sessions = mergePending(getPollerSessions());
+    // Cheap dedup: hash the ids + statuses + summaries to skip identical sends
+    const hash = sessions.map(s => `${s.id}:${s.status}:${s.stuck}:${s.summary?.slice(0, 30)}:${s.lastMessage?.slice(0, 30)}`).join('|');
+    if (hash === lastBroadcastHash) return;
+    lastBroadcastHash = hash;
+    wsServer.broadcast(sessions);
+  }, 1000);
 }
 
 // --- WebSocket event handlers ---

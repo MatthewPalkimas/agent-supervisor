@@ -70,6 +70,16 @@ export class WsServer {
     }
   }
 
+  /** Send a lightweight message to all connected clients (no session payload). */
+  sendAll(msg: Record<string, unknown>): void {
+    const payload = JSON.stringify(msg);
+    for (const ws of this.clients) {
+      if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536) {
+        ws.send(payload);
+      }
+    }
+  }
+
   // Allow external code to listen for 'newClient' and other events
   on(event: string, listener: (...args: unknown[]) => void): this {
     this.wss.on(event as 'connection', listener as () => void);

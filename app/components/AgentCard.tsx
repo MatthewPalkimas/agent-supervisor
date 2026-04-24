@@ -45,7 +45,6 @@ export interface AgentCardProps {
 }
 
 export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, onReview, onViewHistory }: AgentCardProps) {
-  const [, setTick] = useState(0);
   const [showSummary, setShowSummary] = useState(true);
   const [showLast, setShowLast] = useState(false);
   const [input, setInput] = useState('');
@@ -57,11 +56,6 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
 
   const cfg = session.stuck ? STUCK_CONFIG : STATUS_CONFIG[session.status];
   const isAlive = session.status !== 'terminated';
-
-  useEffect(() => {
-    const t = setInterval(() => setTick(n => n + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
