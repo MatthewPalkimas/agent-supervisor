@@ -41,6 +41,7 @@ export class SessionPoller extends EventEmitter {
   private watcher: fs.FSWatcher | null = null;
   private debounceTimer: NodeJS.Timeout | null = null;
   private debounceMs = 500;
+  private scanning = false;
 
   // Track previous status per session to detect transitions
   private prevStatus = new Map<string, string>();
@@ -108,15 +109,17 @@ export class SessionPoller extends EventEmitter {
   private debouncedUpdate(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
-      this.fullScan();
+      if (this.scanning) return;
+      this.scanning = true;
+      this.fullScan().finally(() => { this.scanning = false; });
     }, this.debounceMs);
   }
 
-  private fullScan(): void {
+  private async fullScan(): Promise<void> {
     try {
-      if (!fs.existsSync(this.sessionsDir)) return;
+      try { await fs.promises.access(this.sessionsDir); } catch { return; }
 
-      const files = fs.readdirSync(this.sessionsDir);
+      const files = await fs.promises.readdir(this.sessionsDir);
       const jsonFiles = files.filter(f => f.endsWith('.json'));
       const now = Date.now();
       const cutoff = now - 4 * 60 * 60 * 1000;
@@ -126,9 +129,9 @@ export class SessionPoller extends EventEmitter {
       for (const file of jsonFiles) {
         try {
           const filePath = path.join(this.sessionsDir, file);
-          const stat = fs.statSync(filePath);
+          const stat = await fs.promises.stat(filePath);
 
-          const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          const raw = JSON.parse(await fs.promises.readFile(filePath, 'utf8'));
           const id: string = raw.session_id;
           if (!id) continue;
 
@@ -136,15 +139,13 @@ export class SessionPoller extends EventEmitter {
           const lockPath = path.join(this.sessionsDir, `${id}.lock`);
           let processAlive = false;
           let lockPid: number | null = null;
-          if (fs.existsSync(lockPath)) {
-            try {
-              const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-              if (lock.pid) {
-                lockPid = lock.pid;
-                try { process.kill(lock.pid, 0); processAlive = true; } catch { /* dead */ }
-              }
-            } catch { /* ignore */ }
-          }
+          try {
+            const lock = JSON.parse(await fs.promises.readFile(lockPath, 'utf8'));
+            if (lock.pid) {
+              lockPid = lock.pid;
+              try { process.kill(lock.pid, 0); processAlive = true; } catch { /* dead */ }
+            }
+          } catch { /* no lock file */ }
 
           // Exclude sessions owned by a known excluded process (e.g. orchestrator/supervisor ACP)
           if (lockPid != null && this.isExcludedProcess(lockPid)) continue;
@@ -162,7 +163,7 @@ export class SessionPoller extends EventEmitter {
           const jsonlPath = path.join(this.sessionsDir, `${id}.jsonl`);
           const { lastKind, lastText, hasUnresolvedTool, crLinks } = this.readLastJsonlEvents(jsonlPath);
           let lastActivityMs = now;
-          try { lastActivityMs = fs.statSync(jsonlPath).mtimeMs; } catch { /* use now */ }
+          try { lastActivityMs = (await fs.promises.stat(jsonlPath)).mtimeMs; } catch { /* use now */ }
 
           const status: SessionState['status'] = (hasUnresolvedTool || lastKind === 'ToolResults') ? 'busy' : 'idle';
           const title = raw.title ?? `Session ${id.slice(0, 8)}`;
@@ -173,7 +174,6 @@ export class SessionPoller extends EventEmitter {
           if (prev !== status) {
             hasChanges = true;
             this.prevStatus.set(id, status);
-            // Emit per-session transition so listeners can react to individual changes
             this.emit('sessionTransition', { sessionId: id, status, previousStatus: prev ?? 'unknown' });
           }
 
@@ -211,8 +211,6 @@ export class SessionPoller extends EventEmitter {
 
       this.sessions = updated;
 
-      // Always emit on first scan or when there are changes
-      // (also emit periodically from fallback to keep elapsed times fresh)
       this.emit('update', this.getSessions());
 
       if (hasChanges) {
@@ -223,15 +221,35 @@ export class SessionPoller extends EventEmitter {
     }
   }
 
+  /** Cached CR links per file — only scan new bytes when the file grows. */
+  private crCache = new Map<string, { size: number; links: string[] }>();
+
   private readLastJsonlEvents(jsonlPath: string): { lastKind: string; lastText: string; hasUnresolvedTool: boolean; crLinks: string[] } {
     try {
-      const content = fs.readFileSync(jsonlPath, 'utf8');
+      const stat = fs.statSync(jsonlPath);
+      const fileSize = stat.size;
 
-      // Extract CR links from the entire file content
-      const crMatches = content.match(/CR-[0-9]{6,}/g);
-      const crLinks = crMatches ? [...new Set(crMatches)] : [];
+      // --- CR link extraction: incremental, cached ---
+      const cached = this.crCache.get(jsonlPath);
+      let crLinks = cached?.links ?? [];
+      if (!cached || cached.size < fileSize) {
+        const start = cached?.size ?? 0;
+        const buf = Buffer.alloc(fileSize - start);
+        const fd = fs.openSync(jsonlPath, 'r');
+        fs.readSync(fd, buf, 0, buf.length, start);
+        fs.closeSync(fd);
+        const newMatches = buf.toString('utf8').match(/CR-[0-9]{6,}/g);
+        if (newMatches) crLinks = [...new Set([...crLinks, ...newMatches])];
+        this.crCache.set(jsonlPath, { size: fileSize, links: crLinks });
+      }
 
-      const lines = content.trim().split('\n').filter(Boolean);
+      // --- Status detection: only read the tail (~8 KB) ---
+      const tailSize = Math.min(fileSize, 8192);
+      const tailBuf = Buffer.alloc(tailSize);
+      const fd2 = fs.openSync(jsonlPath, 'r');
+      fs.readSync(fd2, tailBuf, 0, tailSize, fileSize - tailSize);
+      fs.closeSync(fd2);
+      const lines = tailBuf.toString('utf8').trim().split('\n').filter(Boolean);
       if (!lines.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks };
 
       const recent = lines.slice(-10).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);

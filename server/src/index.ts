@@ -210,9 +210,16 @@ function mergePending(sessions: SessionState[]): SessionState[] {
   return result;
 }
 
-/** Broadcast current state (poller + pending) to all clients */
+/** Broadcast current state (poller + pending) to all clients.
+ *  Coalesced via microtask so rapid-fire calls collapse into one frame. */
+let broadcastQueued = false;
 function broadcastAll(): void {
-  wsServer.broadcast(mergePending(getPollerSessions()));
+  if (broadcastQueued) return;
+  broadcastQueued = true;
+  queueMicrotask(() => {
+    broadcastQueued = false;
+    wsServer.broadcast(mergePending(getPollerSessions()));
+  });
 }
 
 // --- WebSocket event handlers ---

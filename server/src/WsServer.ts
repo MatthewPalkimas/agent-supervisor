@@ -60,11 +60,12 @@ export class WsServer {
   }
 
   broadcast(sessions: SessionState[], extra?: Record<string, unknown>): void {
-    const msg = JSON.stringify({ type: 'update', sessions });
+    const payload = extra
+      ? JSON.stringify({ type: 'update', sessions, ...extra })
+      : JSON.stringify({ type: 'update', sessions });
     for (const ws of this.clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(msg);
-        if (extra) ws.send(JSON.stringify(extra));
+      if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount < 65536) {
+        ws.send(payload);
       }
     }
   }

@@ -26,6 +26,7 @@ export class SupervisorPoller extends EventEmitter {
   private sessionsDir = path.join(os.homedir(), '.kiro', 'sessions', 'cli');
 
   private excludePids: Set<number>;
+  private polling = false;
 
   constructor(private acp: AcpClient, supervisorPid?: number) {
     super();
@@ -105,10 +106,13 @@ export class SupervisorPoller extends EventEmitter {
   }
 
   private async poll(): Promise<void> {
-    const all = this.gatherSessionData();
-    if (!all.length) return;
-    const alive = all.filter(s => s.alive);
-    const terminated = all.filter(s => !s.alive);
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const all = this.gatherSessionData();
+      if (!all.length) return;
+      const alive = all.filter(s => s.alive);
+      const terminated = all.filter(s => !s.alive);
     this.responseBuffer = '';
     if (!alive.length) { this.buildAndEmit([], terminated); return; }
 
@@ -146,6 +150,9 @@ export class SupervisorPoller extends EventEmitter {
         console.error('[SupervisorPoller] poll error:', e);
         this.buildAndEmit(alive, terminated);
       }
+    }
+    } finally {
+      this.polling = false;
     }
   }
 
@@ -311,7 +318,14 @@ export class SupervisorPoller extends EventEmitter {
           if (fs.existsSync(jsonlPath)) {
             // Use file mtime as proxy for when the last event was written
             lastEventTimestamp = fs.statSync(jsonlPath).mtimeMs;
-            const lines = fs.readFileSync(jsonlPath, 'utf8').trim().split('\n').filter(Boolean).slice(-15);
+            // Tail-read: only read last ~8KB instead of entire file
+            const jsonlStat = fs.statSync(jsonlPath);
+            const tailSize = Math.min(jsonlStat.size, 8192);
+            const tailBuf = Buffer.alloc(tailSize);
+            const fd = fs.openSync(jsonlPath, 'r');
+            fs.readSync(fd, tailBuf, 0, tailSize, jsonlStat.size - tailSize);
+            fs.closeSync(fd);
+            const lines = tailBuf.toString('utf8').trim().split('\n').filter(Boolean).slice(-15);
             let lastAssistantIdx = -1;
             const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } });
 
