@@ -233,7 +233,8 @@ export class SessionPoller extends EventEmitter {
       const cached = this.crCache.get(jsonlPath);
       let crLinks = cached?.links ?? [];
       if (!cached || cached.size < fileSize) {
-        const start = cached?.size ?? 0;
+        // Overlap by 20 bytes to avoid missing a CR-ID split across read boundaries
+        const start = Math.max(0, (cached?.size ?? 0) - 20);
         const buf = Buffer.alloc(fileSize - start);
         const fd = fs.openSync(jsonlPath, 'r');
         fs.readSync(fd, buf, 0, buf.length, start);
