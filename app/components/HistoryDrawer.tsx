@@ -53,6 +53,7 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
   const scrollRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
+  const [pendingUserMsgs, setPendingUserMsgs] = useState<string[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { toast } = useToast();
 
@@ -63,30 +64,47 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
   }, [onClose]);
 
   // Poll for updates while the drawer is open
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
   useEffect(() => {
-    const interval = setInterval(onRefresh, 2000);
+    const interval = setInterval(() => onRefreshRef.current(), 2000);
     return () => clearInterval(interval);
-  }, [onRefresh]);
+  }, []);
 
-  // Scroll to bottom on first open
-  const initialScroll = useRef(true);
+  // Clear pending messages once they appear in the real messages from the server
+  useEffect(() => {
+    if (pendingUserMsgs.length === 0) return;
+    const lastReal = [...messages].reverse().find(m => m.role === 'user');
+    if (lastReal && pendingUserMsgs.includes(lastReal.text)) {
+      setPendingUserMsgs([]);
+    }
+  }, [messages, pendingUserMsgs]);
+
+  // Merge real messages with optimistic pending ones
+  const allMessages = useMemo(() => {
+    if (pendingUserMsgs.length === 0) return messages;
+    return [...messages, ...pendingUserMsgs.map(text => ({ role: 'user', text }))];
+  }, [messages, pendingUserMsgs]);
+
+  // Auto-scroll to bottom when messages change
+  const prevCount = useRef(0);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (initialScroll.current) {
-      el.scrollTop = el.scrollHeight;
-      initialScroll.current = false;
-      return;
+    const count = filtered.length;
+    if (count !== prevCount.current) {
+      prevCount.current = count;
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
     }
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  });
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return messages;
-    return messages.filter(m => m.text.toLowerCase().includes(q));
-  }, [query, messages]);
+    if (!q) return allMessages;
+    return allMessages.filter(m => m.text.toLowerCase().includes(q));
+  }, [query, allMessages]);
 
   const copy = async (text: string) => {
     try { await navigator.clipboard.writeText(text); toast({ kind: 'success', title: 'Copied' }); }
@@ -95,9 +113,9 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    messages.forEach(m => { c[m.role] = (c[m.role] ?? 0) + 1; });
+    allMessages.forEach(m => { c[m.role] = (c[m.role] ?? 0) + 1; });
     return c;
-  }, [messages]);
+  }, [allMessages]);
 
   return (
     <>
@@ -158,7 +176,7 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
               )}
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-4)' }}>
-              {filtered.length}/{messages.length}
+              {filtered.length}/{allMessages.length}
             </div>
           </div>
 
@@ -189,7 +207,7 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
         >
           {filtered.length === 0 && (
             <div style={{ color: 'var(--text-5)', fontSize: 13, textAlign: 'center', marginTop: 80 }}>
-              {messages.length === 0 ? 'No messages yet' : 'No messages match your search'}
+              {allMessages.length === 0 ? 'No messages yet' : 'No messages match your search'}
             </div>
           )}
           {filtered.map((msg, i) => {
@@ -260,9 +278,11 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 if (draft.trim()) {
-                  onSend(sessionId, draft.trim());
+                  const text = draft.trim();
+                  onSend(sessionId, text);
+                  setPendingUserMsgs(prev => [...prev, text]);
                   setDraft('');
-                  setTimeout(onRefresh, 500);
+                  setTimeout(() => onRefreshRef.current(), 500);
                 }
               }
             }}
@@ -284,9 +304,11 @@ export function SessionChat({ sessionId, sessionName, messages, onClose, onRefre
             disabled={!draft.trim()}
             onClick={() => {
               if (draft.trim()) {
-                onSend(sessionId, draft.trim());
+                const text = draft.trim();
+                onSend(sessionId, text);
+                setPendingUserMsgs(prev => [...prev, text]);
                 setDraft('');
-                setTimeout(onRefresh, 500);
+                setTimeout(() => onRefreshRef.current(), 500);
               }
             }}
             style={{ padding: '9px 16px', fontSize: 12.5 }}
