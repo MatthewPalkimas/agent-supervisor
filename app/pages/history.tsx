@@ -5,8 +5,9 @@ import { Layout } from '../components/Layout';
 import { SessionChat } from '../components/HistoryDrawer';
 
 export default function History() {
-  const { sessions, sendMessage, getHistory, clearHistory, history, connected } = useWebSocket();
+  const { sessions, sendMessage, interruptSession, getHistory, clearHistory, history, connected } = useWebSocket();
   const [query, setQuery] = useState('');
+  const [pendingMessages, setPendingMessages] = useState<Record<string, string[]>>({});
 
   const terminated = useMemo(() =>
     sessions.filter(s => s.status === 'terminated').sort((a, b) => b.startTime - a.startTime),
@@ -116,10 +117,15 @@ export default function History() {
         <SessionChat
           sessionId={history.sessionId}
           sessionName={terminated.find(s => s.id === history.sessionId)?.name ?? history.sessionId.slice(0, 8)}
+          sessionStatus={terminated.find(s => s.id === history.sessionId)?.status}
           messages={history.messages}
+          todo={history.todo}
+          pendingUserMsgs={pendingMessages[history.sessionId] ?? []}
+          onPendingChange={(msgs) => setPendingMessages(prev => ({ ...prev, [history.sessionId]: msgs }))}
           onClose={clearHistory}
           onRefresh={() => getHistory(history.sessionId)}
           onSend={sendMessage}
+          onInterrupt={interruptSession}
         />
       )}
     </Layout>

@@ -1,6 +1,7 @@
 import type { AppProps } from 'next/app';
 import Head from 'next/head';
 import '../styles/globals.css';
+import 'prism-themes/themes/prism-vsc-dark-plus.css';
 import { ToastProvider } from '../components/Toast';
 
 export default function App({ Component, pageProps }: AppProps) {

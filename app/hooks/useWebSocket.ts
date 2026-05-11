@@ -3,7 +3,10 @@ import { SessionState } from '../types/session';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001';
 
-export interface HistoryMessage { role: string; text: string; }
+export interface HistoryMessage { role: string; text: string; timestamp?: number; }
+export interface TodoTask { id: string; description: string; completed: boolean; toolCalls?: string[]; }
+export interface TodoList { description: string; tasks: TodoTask[]; }
+export type TodoState = TodoList[];
 
 export interface OrchestratorActivity {
   timestamp: number;
@@ -20,7 +23,7 @@ export interface OrchestratorStatus {
 export function useWebSocket() {
   const [sessions, setSessions] = useState<SessionState[]>([]);
   const [connected, setConnected] = useState(false);
-  const [history, setHistory] = useState<{ sessionId: string; messages: HistoryMessage[] } | null>(null);
+  const [history, setHistory] = useState<{ sessionId: string; messages: HistoryMessage[]; todo: TodoState | null } | null>(null);
   const [orchestratorStatus, setOrchestratorStatus] = useState<OrchestratorStatus>({ ready: false, activity: [] });
   const [steeringDocs, setSteeringDocs] = useState<{ filename: string; name: string; desc: string }[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
@@ -37,7 +40,13 @@ export function useWebSocket() {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'snapshot' || msg.type === 'update') setSessions(msg.sessions);
-          if (msg.type === 'history') setHistory({ sessionId: msg.sessionId, messages: msg.messages });
+          if (msg.type === 'history') setHistory({ sessionId: msg.sessionId, messages: msg.messages, todo: msg.todo ?? null });
+          if (msg.type === 'history_delta') {
+            setHistory(prev => prev && prev.sessionId === msg.sessionId
+              ? { ...prev, messages: [...prev.messages, ...msg.messages], todo: msg.todo ?? prev.todo }
+              : prev
+            );
+          }
           if (msg.type === 'review_result') {
             setSessions(prev => prev.map(s =>
               s.id === msg.sessionId
@@ -101,7 +110,12 @@ export function useWebSocket() {
       wsRef.current.send(JSON.stringify({ type: 'get_history', sessionId }));
   }, []);
 
-  const clearHistory = useCallback(() => setHistory(null), []);
+  const stopWatching = useCallback(() => {
+    wsRef.current?.readyState === WebSocket.OPEN &&
+      wsRef.current.send(JSON.stringify({ type: 'stop_watching' }));
+  }, []);
+
+  const clearHistory = useCallback(() => { stopWatching(); setHistory(null); }, [stopWatching]);
 
   return { sessions, sendMessage, terminateSession, interruptSession, reviewSession, startSession, getHistory, clearHistory, history, connected, orchestratorStatus, getOrchestratorStatus, steeringDocs, getSteeringDocs };
 }

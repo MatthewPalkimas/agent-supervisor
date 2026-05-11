@@ -25,6 +25,7 @@ export default function Home() {
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [, setTick] = useState(0);
+  const [pendingMessages, setPendingMessages] = useState<Record<string, string[]>>({});
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Single timer for all cards' elapsed time display
@@ -209,10 +210,15 @@ export default function Home() {
         <SessionChat
           sessionId={history.sessionId}
           sessionName={sessions.find(s => s.id === history.sessionId)?.name ?? history.sessionId.slice(0, 8)}
+          sessionStatus={sessions.find(s => s.id === history.sessionId)?.status}
           messages={history.messages}
+          todo={history.todo}
+          pendingUserMsgs={pendingMessages[history.sessionId] ?? []}
+          onPendingChange={(msgs) => setPendingMessages(prev => ({ ...prev, [history.sessionId]: msgs }))}
           onClose={clearHistory}
           onRefresh={() => getHistory(history.sessionId)}
           onSend={sendMessage}
+          onInterrupt={interruptSession}
         />
       )}
 

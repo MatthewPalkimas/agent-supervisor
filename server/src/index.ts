@@ -390,42 +390,236 @@ wsServer.on('startSession', (payload: unknown) => {
     });
 });
 
+// --- Chat file watchers ---
+type HistoryMsg = { role: string; text: string; timestamp?: number };
+type TodoTask = { id: string; description: string; completed: boolean; toolCalls: string[] };
+type TodoList = { description: string; tasks: TodoTask[] };
+type TodoState = TodoList[] | null;
+
+function parseLines(raw: string): { messages: HistoryMsg[]; lastTs: number | undefined; todo: TodoState } {
+  const messages: HistoryMsg[] = [];
+  let lastTs: number | undefined;
+  const todos: TodoList[] = [];
+  const lines = raw.split('\n').filter(Boolean);
+  for (const line of lines) {
+    try {
+      const ev = JSON.parse(line);
+      const evTs: number | undefined = ev.data?.meta?.timestamp ? ev.data.meta.timestamp * 1000 : undefined;
+      if (evTs) lastTs = evTs;
+      if (ev.kind === 'AssistantMessage') {
+        const text = (ev.data?.content ?? [])
+          .filter((b: { kind: string }) => b.kind === 'text')
+          .map((b: { data: unknown }) => String(b.data))
+          .join('');
+        if (text) messages.push({ role: 'assistant', text, timestamp: lastTs ?? Date.now() });
+        for (const block of (ev.data?.content ?? [])) {
+          if (block.kind === 'toolUse') {
+            const name = block.data?.name ?? 'unknown';
+            const input = block.data?.input ?? {};
+            const purpose = input.__tool_use_purpose ?? '';
+            messages.push({ role: 'tool', text: purpose ? `${name}: ${purpose}` : name, timestamp: lastTs ?? Date.now() });
+            // Track todo_list state
+            if (name === 'todo_list') {
+              const current = todos[todos.length - 1];
+              if (input.command === 'create') {
+                todos.push({
+                  description: input.task_list_description ?? '',
+                  tasks: (input.tasks ?? []).map((t: { task_description: string }, i: number) => ({
+                    id: String(i + 1), description: t.task_description, completed: false, toolCalls: [],
+                  })),
+                });
+              } else if (input.command === 'complete' && current) {
+                const ids: string[] = input.completed_task_ids ?? [];
+                current.tasks = current.tasks.map(t => ids.includes(t.id) ? { ...t, completed: true } : t);
+              } else if (input.command === 'add' && current) {
+                const newTasks: { task_description: string }[] = input.new_tasks ?? [];
+                const maxId = Math.max(0, ...current.tasks.map(t => parseInt(t.id) || 0));
+                for (let i = 0; i < newTasks.length; i++) {
+                  current.tasks.push({ id: String(maxId + i + 1), description: newTasks[i].task_description, completed: false, toolCalls: [] });
+                }
+              } else if (input.command === 'remove' && current) {
+                const ids: string[] = input.remove_task_ids ?? [];
+                current.tasks = current.tasks.filter(t => !ids.includes(t.id));
+              }
+            } else if (todos.length > 0) {
+              // Assign non-todo tool calls to the first incomplete task of the latest todo
+              const current = todos[todos.length - 1];
+              const currentTask = current.tasks.find(t => !t.completed);
+              if (currentTask) {
+                currentTask.toolCalls.push(purpose ? `${name}: ${purpose}` : name);
+              }
+            }
+          }
+        }
+      } else if (ev.kind === 'HumanMessage' || ev.kind === 'UserMessage' || ev.kind === 'Prompt') {
+        const text = (ev.data?.content ?? [])
+          .filter((b: { kind: string }) => b.kind === 'text')
+          .map((b: { data: unknown }) => String(b.data))
+          .join('');
+        if (text) messages.push({ role: 'user', text, timestamp: evTs || lastTs });
+      }
+    } catch { /* skip malformed line */ }
+  }
+  return { messages, lastTs, todo: todos.length > 0 ? todos : null };
+}
+
+const activeWatchers = new Map<WebSocket, { watcher: fs.FSWatcher; sessionId: string }>();
+
+function stopWatching(ws: WebSocket) {
+  const entry = activeWatchers.get(ws);
+  if (entry) {
+    entry.watcher.close();
+    activeWatchers.delete(ws);
+  }
+}
+
 wsServer.on('getHistory', (payload: unknown) => {
   const { sessionId, ws } = payload as { sessionId: string; ws: WebSocket };
   const jsonlPath = path.join(os.homedir(), '.kiro', 'sessions', 'cli', `${sessionId}.jsonl`);
-  const messages: Array<{ role: string; text: string }> = [];
+
+  // Stop any existing watcher for this client
+  stopWatching(ws);
+
+  // Initial full read
+  let byteOffset = 0;
+  let lastTs: number | undefined;
+  let currentTodo: TodoState = null;
   try {
-    const lines = fs.readFileSync(jsonlPath, 'utf8').trim().split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const ev = JSON.parse(line);
-        if (ev.kind === 'AssistantMessage') {
-          const text = (ev.data?.content ?? [])
-            .filter((b: { kind: string }) => b.kind === 'text')
-            .map((b: { data: unknown }) => String(b.data))
-            .join('');
-          if (text) messages.push({ role: 'assistant', text });
-          // Extract tool calls
-          for (const block of (ev.data?.content ?? [])) {
-            if (block.kind === 'toolUse') {
-              const name = block.data?.name ?? 'unknown';
-              const purpose = block.data?.input?.__tool_use_purpose ?? '';
-              messages.push({ role: 'tool', text: purpose ? `${name}: ${purpose}` : name });
-            }
-          }
-        } else if (ev.kind === 'HumanMessage' || ev.kind === 'UserMessage' || ev.kind === 'Prompt') {
-          const text = (ev.data?.content ?? [])
-            .filter((b: { kind: string }) => b.kind === 'text')
-            .map((b: { data: unknown }) => String(b.data))
-            .join('');
-          if (text) messages.push({ role: 'user', text });
-        }
-      } catch { /* skip */ }
+    const content = fs.readFileSync(jsonlPath, 'utf8');
+    byteOffset = Buffer.byteLength(content, 'utf8');
+    const parsed = parseLines(content);
+    lastTs = parsed.lastTs;
+    currentTodo = parsed.todo;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'history', sessionId, messages: parsed.messages, todo: parsed.todo }));
     }
-  } catch { /* file not found */ }
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'history', sessionId, messages }));
+  } catch {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'history', sessionId, messages: [], todo: null }));
+    }
+    return;
   }
+
+  // Watch for changes
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const watcher = fs.watch(jsonlPath, () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        try {
+          const stat = fs.statSync(jsonlPath);
+          if (stat.size <= byteOffset) return; // no new data
+          const fd = fs.openSync(jsonlPath, 'r');
+          const buf = Buffer.alloc(stat.size - byteOffset);
+          fs.readSync(fd, buf, 0, buf.length, byteOffset);
+          fs.closeSync(fd);
+          byteOffset = stat.size;
+          const newContent = buf.toString('utf8');
+          // For todo tracking in deltas, we need to apply on top of current state
+          const parsed = parseLines(newContent);
+          if (parsed.lastTs) lastTs = parsed.lastTs;
+          // Rebuild todo from full file whenever there's an active todo (tool calls need assignment)
+          const hasToolCalls = parsed.messages.some(m => m.role === 'tool');
+          if (hasToolCalls && currentTodo || parsed.todo) {
+            const full = fs.readFileSync(jsonlPath, 'utf8');
+            currentTodo = parseLines(full).todo;
+          }
+          if (ws.readyState === WebSocket.OPEN && (parsed.messages.length > 0 || currentTodo)) {
+            ws.send(JSON.stringify({ type: 'history_delta', sessionId, messages: parsed.messages, todo: currentTodo }));
+          }
+        } catch { /* file read error, ignore */ }
+      }, 30);
+    });
+    activeWatchers.set(ws, { watcher, sessionId });
+    ws.on('close', () => stopWatching(ws));
+  } catch { /* watch failed, fall back to no live updates */ }
+});
+
+wsServer.on('stopWatching', (payload: unknown) => {
+  const { ws } = payload as { ws: WebSocket };
+  stopWatching(ws);
+});
+
+// --- Yeet v3 ---
+const YEET_HISTORY_PATH = path.join(os.homedir(), '.kiro', 'yeet-history.json');
+const YEET_RATE_LIMIT = 5; // per minute per client
+
+type YeetEntry = { id: string; target: string; timestamp: number; reactions: Record<string, number> };
+
+function loadYeetHistory(): YeetEntry[] {
+  try { return JSON.parse(fs.readFileSync(YEET_HISTORY_PATH, 'utf8')); } catch { return []; }
+}
+function saveYeetHistory(h: YeetEntry[]) {
+  try { fs.writeFileSync(YEET_HISTORY_PATH, JSON.stringify(h)); } catch { /* ignore */ }
+}
+
+const yeetHistory: YeetEntry[] = loadYeetHistory();
+const yeetRateMap = new Map<WebSocket, number[]>();
+// Per-target yeet count derived from history
+function yeetCounts(): Record<string, number> {
+  return yeetHistory.reduce<Record<string, number>>((acc, e) => {
+    acc[e.target] = (acc[e.target] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+wsServer.on('yeet', (payload: unknown) => {
+  const { target, ws } = payload as { target: string; ws: WebSocket };
+  if (!target || !target.trim()) {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: 'yeet_error', error: 'target must not be empty' }));
+    return;
+  }
+  const now = Date.now();
+  const recent = (yeetRateMap.get(ws) ?? []).filter(t => now - t < 60_000);
+  if (recent.length >= YEET_RATE_LIMIT) {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: 'yeet_error', error: 'rate limit exceeded' }));
+    return;
+  }
+  recent.push(now);
+  yeetRateMap.set(ws, recent);
+  const entry: YeetEntry = { id: `${now}-${Math.random().toString(36).slice(2, 7)}`, target, timestamp: now, reactions: {} };
+  yeetHistory.push(entry);
+  saveYeetHistory(yeetHistory);
+  wsServer.sendAll({ type: 'yeet_broadcast', entry });
+  if (ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'yeet_result', result: `🚀 Yeeted: ${target}` }));
+});
+
+wsServer.on('yeetReact', (payload: unknown) => {
+  const { id, emoji, ws } = payload as { id: string; emoji: string; ws: WebSocket };
+  const entry = yeetHistory.find(e => e.id === id);
+  if (!entry) {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: 'yeet_error', error: 'yeet not found' }));
+    return;
+  }
+  entry.reactions[emoji] = (entry.reactions[emoji] ?? 0) + 1;
+  saveYeetHistory(yeetHistory);
+  wsServer.sendAll({ type: 'yeet_reaction_update', id, reactions: entry.reactions });
+});
+
+wsServer.on('getYeetHistory', (payload: unknown) => {
+  const { ws, limit, offset } = payload as { ws: WebSocket; limit?: number; offset?: number };
+  const start = offset ?? 0;
+  const end = start + (limit ?? 20);
+  const page = yeetHistory.slice(start, end);
+  if (ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'yeet_history', history: page, total: yeetHistory.length }));
+});
+
+wsServer.on('getYeetMetrics', (payload: unknown) => {
+  const { ws } = payload as { ws: WebSocket };
+  if (ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'yeet_metrics', counts: yeetCounts() }));
+});
+
+wsServer.on('clearYeetHistory', (_payload: unknown) => {
+  yeetHistory.splice(0);
+  saveYeetHistory(yeetHistory);
+  wsServer.sendAll({ type: 'yeet_history_cleared' });
 });
 
 // --- Pollers ---

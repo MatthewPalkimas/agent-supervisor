@@ -33,6 +33,9 @@ export class WsServer {
         if (msg.type === 'get_history' && msg.sessionId) {
           this.emit('getHistory', { sessionId: msg.sessionId, ws });
         }
+        if (msg.type === 'stop_watching') {
+          this.emit('stopWatching', { ws });
+        }
         if (msg.type === 'interrupt' && msg.sessionId) {
           this.emit('interrupt', { sessionId: msg.sessionId });
         }
@@ -44,6 +47,21 @@ export class WsServer {
         }
         if (msg.type === 'get_steering_docs') {
           this.emit('getSteeringDocs', { ws });
+        }
+        if (msg.type === 'yeet' && msg.target) {
+          this.emit('yeet', { target: msg.target, ws });
+        }
+        if (msg.type === 'yeet_react' && msg.id && msg.emoji) {
+          this.emit('yeetReact', { id: msg.id, emoji: msg.emoji, ws });
+        }
+        if (msg.type === 'get_yeet_history') {
+          this.emit('getYeetHistory', { ws, limit: msg.limit, offset: msg.offset });
+        }
+        if (msg.type === 'get_yeet_metrics') {
+          this.emit('getYeetMetrics', { ws });
+        }
+        if (msg.type === 'clear_yeet_history') {
+          this.emit('clearYeetHistory', { ws });
         }
       } catch (e) {
         console.error('[WS] Failed to parse client message:', e);
