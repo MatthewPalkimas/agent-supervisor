@@ -229,18 +229,39 @@ export class SessionPoller extends EventEmitter {
       const stat = fs.statSync(jsonlPath);
       const fileSize = stat.size;
 
-      // --- CR link extraction: incremental, cached ---
+      // --- CR link extraction: only from agent's own cr commands ---
       const cached = this.crCache.get(jsonlPath);
       let crLinks = cached?.links ?? [];
       if (!cached || cached.size < fileSize) {
-        // Overlap by 20 bytes to avoid missing a CR-ID split across read boundaries
-        const start = Math.max(0, (cached?.size ?? 0) - 20);
+        const start = cached?.size ?? 0;
         const buf = Buffer.alloc(fileSize - start);
         const fd = fs.openSync(jsonlPath, 'r');
         fs.readSync(fd, buf, 0, buf.length, start);
         fs.closeSync(fd);
-        const newMatches = buf.toString('utf8').match(/CR-[0-9]{6,}/g);
-        if (newMatches) crLinks = [...new Set([...crLinks, ...newMatches])];
+        const newLines = buf.toString('utf8').split('\n').filter(Boolean);
+        for (let li = 0; li < newLines.length; li++) {
+          try {
+            const ev = JSON.parse(newLines[li]);
+            if (ev.kind === 'AssistantMessage') {
+              const hasCrTool = (ev.data?.content ?? []).some((b: { kind: string; data?: { name?: string; input?: { command?: string } } }) =>
+                b.kind === 'toolUse' && (
+                  b.data?.name === 'CRRevisionCreator' ||
+                  b.data?.name === 'CodeReviewWriteActions' ||
+                  (b.data?.name === 'shell' && /\bcr\b/.test(b.data?.input?.command ?? '') && /--summary|-i |--update-review|-r |--new-review|--all/.test(b.data?.input?.command ?? ''))
+                )
+              );
+              if (hasCrTool && li + 1 < newLines.length) {
+                try {
+                  const tr = JSON.parse(newLines[li + 1]);
+                  if (tr.kind === 'ToolResults') {
+                    const matches = JSON.stringify(tr.data).match(/CR-[0-9]{6,}/g);
+                    if (matches) crLinks = [...new Set([...crLinks, ...matches])];
+                  }
+                } catch {}
+              }
+            }
+          } catch {}
+        }
         this.crCache.set(jsonlPath, { size: fileSize, links: crLinks });
       }
 
