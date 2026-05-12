@@ -439,8 +439,10 @@ export function SessionChat({ sessionId, sessionName, sessionStatus, messages, t
                 );
               }
 
-              // Hide all tool calls when todo exists — they show nested under tasks
-              if (todo && todo.length > 0) return null;
+              // Hide tool calls that are already shown nested under a todo task
+              const toolText = msg.text;
+              const isAssignedToTask = todo && todo.some(list => list.tasks.some(t => t.toolCalls?.includes(toolText)));
+              if (isAssignedToTask) return null;
 
               return (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px' }}>
