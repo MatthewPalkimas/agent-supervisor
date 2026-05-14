@@ -26,3 +26,12 @@ For Brazil code changes
 - Never use the `--parent` flag with `cr`
 - Always run tests before submitting a CR
 - Adhere CR description to the `.crux_template.md` if that file exists.
+
+## Visualize (CDK changes)
+
+If the change involves CDK/infrastructure code, you must generate a pipeline visualization:
+
+1. From the package root: `brazil-build app visualize -- --generate-only`
+2. Copy output: `cp -r build/visualize/* ~/visualize-hub/`
+3. The visualization is served at `http://dev-dsk-palkimas-2b-06000f1d.us-west-2.amazon.com:9000/<pipeline-name>/`
+4. Include the visualization link in the CR description

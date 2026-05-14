@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { AcpClient } from './AcpClient';
 import { SessionPoller, SessionState } from './SessionPoller';
 import { SupervisorPoller } from './Supervisor';
@@ -11,6 +12,16 @@ import { Orchestrator, ReviewResult } from './Orchestrator';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL ?? '30000', 10);
+
+const VISUALIZE_HUB_DIR = path.join(os.homedir(), 'visualize-hub');
+const VISUALIZE_HUB_PORT = parseInt(process.env.VISUALIZE_HUB_PORT ?? '9000', 10);
+fs.mkdirSync(VISUALIZE_HUB_DIR, { recursive: true });
+const vizHub = spawn('python3', ['-m', 'http.server', String(VISUALIZE_HUB_PORT), '--directory', VISUALIZE_HUB_DIR], {
+  stdio: 'ignore',
+  detached: false,
+});
+vizHub.on('error', (err) => console.error('[VisualizeHub] Failed to start:', err));
+console.log(`[VisualizeHub] Serving ${VISUALIZE_HUB_DIR} on port ${VISUALIZE_HUB_PORT}`);
 
 const wsServer = new WsServer(PORT);
 const filePoller = new SessionPoller();
