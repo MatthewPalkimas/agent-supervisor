@@ -21,4 +21,6 @@ export interface SessionState {
   reviewIssues?: string[];
   /** Code review links extracted from agent output */
   crLinks?: string[];
+  /** Brazil workspace root path, if the agent is working in one */
+  workspacePath?: string;
 }

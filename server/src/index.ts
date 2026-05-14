@@ -463,12 +463,13 @@ function parseLines(raw: string): { messages: HistoryMsg[]; lastTs: number | und
   return { messages, lastTs, todo: todos.length > 0 ? todos : null };
 }
 
-const activeWatchers = new Map<WebSocket, { watcher: fs.FSWatcher; sessionId: string }>();
+const activeWatchers = new Map<WebSocket, { watcher: fs.FSWatcher; sessionId: string; closeListener: () => void }>();
 
 function stopWatching(ws: WebSocket) {
   const entry = activeWatchers.get(ws);
   if (entry) {
     entry.watcher.close();
+    ws.off('close', entry.closeListener);
     activeWatchers.delete(ws);
   }
 }
@@ -531,8 +532,8 @@ wsServer.on('getHistory', (payload: unknown) => {
         } catch { /* file read error, ignore */ }
       }, 30);
     });
-    activeWatchers.set(ws, { watcher, sessionId });
-    ws.on('close', () => stopWatching(ws));
+    activeWatchers.set(ws, { watcher, sessionId, closeListener: () => stopWatching(ws) });
+    ws.on('close', activeWatchers.get(ws)!.closeListener);
   } catch { /* watch failed, fall back to no live updates */ }
 });
 

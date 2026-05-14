@@ -22,6 +22,8 @@ export interface SessionState {
   hasPendingTasks: boolean;
   /** Code review links extracted from agent output */
   crLinks?: string[];
+  /** Brazil workspace root path, if the agent is working in one */
+  workspacePath?: string;
 }
 
 /**
@@ -90,7 +92,6 @@ export class SessionPoller extends EventEmitter {
           this.debouncedUpdate();
         }
       });
-      console.log('[SessionPoller] Watching', this.sessionsDir);
     } catch (e) {
       console.warn('[SessionPoller] fs.watch unavailable, using poll-only mode:', e);
     }
@@ -161,7 +162,7 @@ export class SessionPoller extends EventEmitter {
           const startTime = this.sessionStartTimes.get(id)!;
 
           const jsonlPath = path.join(this.sessionsDir, `${id}.jsonl`);
-          const { lastKind, lastText, hasUnresolvedTool, crLinks } = this.readLastJsonlEvents(jsonlPath);
+          const { lastKind, lastText, hasUnresolvedTool, crLinks, workspacePath } = this.readLastJsonlEvents(jsonlPath);
           let lastActivityMs = now;
           try { lastActivityMs = (await fs.promises.stat(jsonlPath)).mtimeMs; } catch { /* use now */ }
 
@@ -192,6 +193,7 @@ export class SessionPoller extends EventEmitter {
             lastActivityMs,
             hasPendingTasks: false,
             crLinks,
+            workspacePath,
           });
         } catch { /* skip */ }
       }
@@ -222,47 +224,79 @@ export class SessionPoller extends EventEmitter {
   }
 
   /** Cached CR links per file — only scan new bytes when the file grows. */
-  private crCache = new Map<string, { size: number; links: string[] }>();
+  private crCache = new Map<string, { size: number; links: string[]; workspacePath?: string }>();
 
-  private readLastJsonlEvents(jsonlPath: string): { lastKind: string; lastText: string; hasUnresolvedTool: boolean; crLinks: string[] } {
+  private readLastJsonlEvents(jsonlPath: string): { lastKind: string; lastText: string; hasUnresolvedTool: boolean; crLinks: string[]; workspacePath?: string } {
     try {
       const stat = fs.statSync(jsonlPath);
       const fileSize = stat.size;
 
-      // --- CR link extraction: only from agent's own cr commands ---
+      // --- CR link extraction: incremental scan, recompute from scratch on any file change ---
       const cached = this.crCache.get(jsonlPath);
-      let crLinks = cached?.links ?? [];
-      if (!cached || cached.size < fileSize) {
+      let crLinks: string[] = [];
+      let workspacePath: string | undefined;
+      if (cached && cached.size === fileSize) {
+        crLinks = cached.links;
+        workspacePath = cached.workspacePath;
+      } else {
         const start = cached?.size ?? 0;
         const buf = Buffer.alloc(fileSize - start);
         const fd = fs.openSync(jsonlPath, 'r');
         fs.readSync(fd, buf, 0, buf.length, start);
         fs.closeSync(fd);
-        const newLines = buf.toString('utf8').split('\n').filter(Boolean);
-        for (let li = 0; li < newLines.length; li++) {
+        crLinks = cached?.links ?? [];
+        workspacePath = cached?.workspacePath;
+        let pendingCrScan = false;
+        const allLines = buf.toString('utf8').split('\n').filter(Boolean);
+        for (let li = 0; li < allLines.length; li++) {
           try {
-            const ev = JSON.parse(newLines[li]);
+            const ev = JSON.parse(allLines[li]);
             if (ev.kind === 'AssistantMessage') {
               const hasCrTool = (ev.data?.content ?? []).some((b: { kind: string; data?: { name?: string; input?: { command?: string } } }) =>
                 b.kind === 'toolUse' && (
                   b.data?.name === 'CRRevisionCreator' ||
                   b.data?.name === 'CodeReviewWriteActions' ||
-                  (b.data?.name === 'shell' && /\bcr\b/.test(b.data?.input?.command ?? '') && /--summary|-i |--update-review|-r |--new-review|--all/.test(b.data?.input?.command ?? ''))
+                  (b.data?.name === 'shell' && /(?:^|\s)cr(?:\s|$)/.test(b.data?.input?.command ?? '') && !/--help|-h\b/.test(b.data?.input?.command ?? ''))
                 )
               );
-              if (hasCrTool && li + 1 < newLines.length) {
-                try {
-                  const tr = JSON.parse(newLines[li + 1]);
-                  if (tr.kind === 'ToolResults') {
-                    const matches = JSON.stringify(tr.data).match(/CR-[0-9]{6,}/g);
-                    if (matches) crLinks = [...new Set([...crLinks, ...matches])];
-                  }
-                } catch {}
+              if (hasCrTool) {
+                let foundResults = false;
+                for (let ti = li + 1; ti < allLines.length; ti++) {
+                  try {
+                    const tr = JSON.parse(allLines[ti]);
+                    if (tr.kind === 'ToolResults') {
+                      const matches = JSON.stringify(tr.data).match(/CR-[0-9]{6,}/g);
+                      if (matches) crLinks = [...new Set([...crLinks, ...matches])];
+                      foundResults = true;
+                      break;
+                    }
+                  } catch {}
+                }
+                // ToolResults not written yet — don't cache so we re-scan next time
+                if (!foundResults) { pendingCrScan = true; }
+              }
+              // Extract workplace path from any tool input (read, write, shell, BrazilBuildAnalyzerTool, etc.)
+              const allToolText = JSON.stringify(ev.data?.content ?? '');
+              const wpMatches = allToolText.matchAll(/\/(?:[^"\\\/]+\/)*workplace\/[^"\\]+/g);
+              for (const m of wpMatches) {
+                const wp = m[0].replace(/,\s*$/, '');
+                const match = wp.match(/^(.*\/workplace\/.+?)(?:\/src\/|\/src$|$)/);
+                if (match && fs.existsSync(path.join(match[1], 'src'))) {
+                  const wsRoot = match[1];
+                  const wsName = path.basename(wsRoot);
+                  const wsFile = path.join(wsRoot, `${wsName}.code-workspace`);
+                  workspacePath = fs.existsSync(wsFile) ? wsFile : path.join(wsRoot, 'src');
+                }
               }
             }
           } catch {}
         }
-        this.crCache.set(jsonlPath, { size: fileSize, links: crLinks });
+        if (!pendingCrScan) {
+          this.crCache.set(jsonlPath, { size: fileSize, links: crLinks, workspacePath });
+        } else {
+          // ToolResults not yet written — cache at start so next scan re-reads the AssistantMessage
+          this.crCache.set(jsonlPath, { size: start, links: crLinks, workspacePath });
+        }
       }
 
       // --- Status detection: only read the tail (~8 KB) ---
@@ -272,10 +306,10 @@ export class SessionPoller extends EventEmitter {
       fs.readSync(fd2, tailBuf, 0, tailSize, fileSize - tailSize);
       fs.closeSync(fd2);
       const lines = tailBuf.toString('utf8').trim().split('\n').filter(Boolean);
-      if (!lines.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks };
+      if (!lines.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks, workspacePath };
 
       const recent = lines.slice(-10).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-      if (!recent.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks };
+      if (!recent.length) return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks, workspacePath };
 
       const last = recent[recent.length - 1];
       const lastKind: string = last?.kind ?? '';
@@ -299,7 +333,7 @@ export class SessionPoller extends EventEmitter {
         hasUnresolvedTool = hasToolUse && !hasToolResultAfter;
       }
 
-      return { lastKind, lastText, hasUnresolvedTool, crLinks };
+      return { lastKind, lastText, hasUnresolvedTool, crLinks, workspacePath };
     } catch {
       return { lastKind: '', lastText: '', hasUnresolvedTool: false, crLinks: [] };
     }

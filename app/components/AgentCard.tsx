@@ -264,7 +264,7 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
 
         {/* Footer actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, flexWrap: 'wrap' }}>
-          <button className="btn btn-ghost btn-xs" onClick={() => onViewHistory(session.id)}>
+          <button className="btn btn-ghost btn-xs" onClick={() => onViewHistory(session.id)} style={{ color: 'var(--ok)' }}>
             💬 Chat
           </button>
           {session.lastMessage && (
@@ -277,6 +277,15 @@ export function AgentCard({ session, onSendMessage, onTerminate, onInterrupt, on
               🔍 Review
             </button>
           )}
+          {session.workspacePath && (() => {
+            const host = process.env.NEXT_PUBLIC_SSH_HOST ?? 'localhost';
+            const uri = `vscode://vscode-remote/ssh-remote+${host}${session.workspacePath}?windowId=_blank`;
+            return (
+              <a href={uri} title="Open in VS Code" className="btn btn-ghost btn-xs" style={{ textDecoration: 'none', color: '#c47a3a' }}>
+                ⌨️ Workspace
+              </a>
+            );
+          })()}
           <div style={{ flex: 1 }} />
           {isAlive && (
             <button className="btn btn-ghost btn-xs tt" data-tt="Copy session ID" onClick={copyId}>⎘</button>
