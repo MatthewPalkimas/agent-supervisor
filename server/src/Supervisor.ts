@@ -156,12 +156,20 @@ export class SupervisorPoller extends EventEmitter {
     }
   }
 
+  private refusalCount = 0;
+
   private async processResponse(text: string, alive: RawSession[], terminated: RawSession[]): Promise<void> {
-    // Extract JSON array by finding balanced brackets — the LLM sometimes adds
-    // commentary before/after the JSON, or the response contains other brackets.
     const jsonArray = this.extractJsonArray(text);
     if (!jsonArray) {
-      console.log('[SupervisorPoller] No valid JSON array in response, using fallback. Response:', text.slice(0, 200));
+      // Detect refusal pattern — reset session after 2 consecutive non-JSON responses
+      this.refusalCount++;
+      if (this.refusalCount >= 2) {
+        console.log('[SupervisorPoller] Repeated non-JSON responses, resetting session');
+        this.refusalCount = 0;
+        try { await this.acp.newSession(); } catch { /* ignore */ }
+      } else {
+        console.log('[SupervisorPoller] No valid JSON array in response, using fallback. Response:', text.slice(0, 200));
+      }
       this.buildAndEmit(alive, terminated);
       return;
     }
@@ -169,6 +177,7 @@ export class SupervisorPoller extends EventEmitter {
       const assessments: Assessment[] = JSON.parse(jsonArray);
 
       const now = Date.now();
+      this.refusalCount = 0;
       const aliveSessions: SessionState[] = alive.map(s => {
         if (!this.sessionStartTimes.has(s.id)) this.sessionStartTimes.set(s.id, now);
         const startTime = this.sessionStartTimes.get(s.id)!;

@@ -677,13 +677,7 @@ async function startSupervisor(): Promise<void> {
   if (supPid) filePoller.addExcludePid(supPid);
 
   // Prime the supervisor with its role so it never tries to use tools
-  await acp.prompt(
-    'You are a JSON-only analysis assistant. Your sole job is to read session data I provide and respond with a JSON array. ' +
-    'You have NO tools available — do not attempt to call any tools, list tools, or request tool access. ' +
-    'Never mention tools like list_sessions or any other tool name. ' +
-    'When I send session data, respond ONLY with a JSON array. Say "understood" now.'
-  );
-  await new Promise(r => setTimeout(r, 2000));
+  await new Promise(r => setTimeout(r, 500));
 
   supervisorPoller = new SupervisorPoller(acp, supPid ?? undefined);
 
